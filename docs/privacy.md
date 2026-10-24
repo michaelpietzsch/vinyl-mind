@@ -37,7 +37,8 @@ Global models built earlier stay; they are averages over several stations and ca
 ## What the operator sees
 
 The overview and the command line show stations by key fingerprint, their status, trust and number of profiles,
-the contributions per group, the models with their reports, and the recent requests including client addresses.
+the contributions per group, the models with their reports, and the recent requests including client addresses
+(`vinyl-mind access-log`).
 There is nothing more to see: a profile ID is random, and the coefficients of a contribution describe how a
 detector behaves on a chain, not what was played on it.
 

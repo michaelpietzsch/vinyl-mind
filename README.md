@@ -80,7 +80,8 @@ go build ./cmd/vinyl-mind
 | `tools/probe` | checks a running server from the outside, as a station reaches it |
 | `internal/client` | a minimal station, for the tests and as an example |
 
-Contributions are welcome, see [CONTRIBUTING.md](CONTRIBUTING.md); security issues go to [SECURITY.md](SECURITY.md).
+Contributions are welcome, see [CONTRIBUTING.md](CONTRIBUTING.md); security issues go to [SECURITY.md](SECURITY.md);
+changes per version are in [CHANGELOG.md](CHANGELOG.md).
 
 ## Open points
 
