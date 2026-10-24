@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -402,7 +403,8 @@ func TestAdmin(t *testing.T) {
 		t.Fatalf("wrong token: %d", code)
 	}
 	code, page := get(func(r *http.Request) { r.SetBasicAuth("operator", "secret-token-1234567890-abcdefghijkl") })
-	if code != 200 || !strings.Contains(page, s.Fingerprint()[:19]) {
+	// The template writes "+" of a base64 fingerprint as &#43;, which a browser shows as "+"
+	if code != 200 || !strings.Contains(html.UnescapeString(page), s.Fingerprint()[:19]) {
 		t.Fatalf("overview: %d", code)
 	}
 	if code, _ = get(func(r *http.Request) { r.Header.Set("Authorization", "Bearer secret-token-1234567890-abcdefghijkl") }); code != 200 {
