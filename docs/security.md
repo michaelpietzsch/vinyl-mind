@@ -51,8 +51,10 @@ are reported privately, see [SECURITY.md](../SECURITY.md).
   storage tests on PostgreSQL, a container smoke test, and a Trivy scan of the image that fails on fixable HIGH or
   CRITICAL findings. GitHub Actions are pinned by commit and keep no credentials in the checkout. Dependabot
   updates actions, modules and base images.
-- The image is a static binary on a hardened base (Docker Hardened Images), without shell, published only from
-  `main` and version tags, with provenance and SBOM.
+- The image is a static binary on a hardened base (Docker Hardened Images, pinned by digest), without shell,
+  published only from `main` and version tags, with provenance and SBOM.
+- Request bodies must announce their length: chunked bodies get 411, announced oversized ones 413 before anything is
+  read.
 
 ## Known limits
 
