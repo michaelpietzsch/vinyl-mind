@@ -1,0 +1,14 @@
+.git
+.github
+.graphify
+.graphifyignore
+.claude
+CLAUDE.md
+CLAUDE.local.md
+data
+*.sqlite
+*.sqlite-*
+*.pem
+*.toml
+.env
+/vinyl-mind

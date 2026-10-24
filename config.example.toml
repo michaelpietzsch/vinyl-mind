@@ -1,0 +1,37 @@
+# Vinyl-Mind configuration. Every key is optional; the values shown are the defaults. Unknown keys are an error.
+# Paths and secrets come from the environment: VINYL_MIND_DATA_DIR, VINYL_MIND_DATABASE_URL, VINYL_MIND_ADMIN_TOKEN.
+
+# database_url = "postgres://vinyl-mind:secret@db:5432/vinyl-mind"   # default: SQLite in the data directory
+listen = ":8080"
+join_mode = "approval"            # "approval": stations without invitation wait for `vinyl-mind approve`
+                                  # "invitation": an invitation code is required
+clock_skew_s = 300                # accepted difference between a request's timestamp and the server clock
+station_requests_per_min = 60
+address_requests_per_min = 120
+joins_per_hour = 10               # per client address
+access_log_days = 14
+max_profiles_per_station = 16
+feature_versions = [1]
+trusted_proxies = []              # addresses or prefixes of the reverse proxy, e.g. ["172.18.0.0/16"]
+
+[aggregation]
+method = "trimmed_mean"           # or "median"
+trim = 0.2                        # share of the weight cut off at each end, per coefficient
+manual_weight = 5.0               # a judgement by hand counts like five master classifications
+max_est_error = 0.30              # contributions with a worse self-check are left out
+max_station_share = 0.25          # cap of a fully trusted station's share; a station's cap is this times its trust
+min_profiles = 3
+min_stations = 2
+min_class_profiles = 5            # before a chain class gets a model of its own
+trust_start = 0.25
+trust_min = 0.05
+trust_step = 0.1                  # gained at most once per day
+trust_penalty = 0.15              # lost per contribution far from the consensus
+consistency_k = 3.0
+
+[publication]
+auto = true                       # publish and withdraw by the stations' check reports
+min_reports = 3
+min_report_stations = 2
+tolerance = 0.01
+combine_interval_s = 3600         # 0: combine only with `vinyl-mind combine`
