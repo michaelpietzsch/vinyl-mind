@@ -51,13 +51,13 @@ func TestRefusesMistakes(t *testing.T) {
 
 func TestEnvironmentAndProxies(t *testing.T) {
 	t.Setenv("VINYL_MIND_DATA_DIR", "/srv/vm")
-	t.Setenv("VINYL_MIND_ADMIN_TOKEN", "tok")
+	t.Setenv("VINYL_MIND_ADMIN_TOKEN", "a-token-with-at-least-32-characters!")
 	t.Setenv("VINYL_MIND_DATABASE_URL", "postgres://x")
 	c, err := Load(write(t, "trusted_proxies = [\"172.18.0.0/16\", \"10.0.0.1\"]\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.DataDir != "/srv/vm" || c.AdminToken != "tok" || c.DBURL() != "postgres://x" ||
+	if c.DataDir != "/srv/vm" || c.AdminToken != "a-token-with-at-least-32-characters!" || c.DBURL() != "postgres://x" ||
 		c.ServerKeyPath() != filepath.Join("/srv/vm", "server-key.pem") {
 		t.Fatalf("environment not applied: %+v", c)
 	}
@@ -75,4 +75,11 @@ func mustAddr(t *testing.T, s string) netip.Addr {
 		t.Fatal(err)
 	}
 	return a
+}
+
+func TestShortAdminTokenIsRefused(t *testing.T) {
+	t.Setenv("VINYL_MIND_ADMIN_TOKEN", "short")
+	if _, err := Load(write(t, "")); err == nil || !strings.Contains(err.Error(), "32 characters") {
+		t.Fatalf("a short admin token must be refused: %v", err)
+	}
 }

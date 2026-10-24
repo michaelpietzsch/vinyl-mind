@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"syscall"
 	"text/tabwriter"
@@ -54,6 +55,7 @@ Models
   publish <version>           publish a model regardless of reports
   withdraw <version> [-reason text]
 
+  backup <dir>                write a consistent copy of the database and the server key into dir
   prune                       forget expired nonces and old access log entries
   version                     print the version
 
@@ -134,7 +136,7 @@ func versionArg(args []string) (int64, error) {
 func run(cfg config.Config, cmd string, args []string) error {
 	known := map[string]bool{"serve": true, "init": true, "fingerprint": true, "invite": true, "invitations": true,
 		"revoke-invitation": true, "stations": true, "approve": true, "revoke": true, "combine": true, "models": true,
-		"publish": true, "withdraw": true, "prune": true}
+		"publish": true, "withdraw": true, "prune": true, "backup": true}
 	if !known[cmd] {
 		fmt.Fprint(os.Stderr, usage)
 		return fmt.Errorf("unknown command %q", cmd)
@@ -249,14 +251,14 @@ func run(cfg config.Config, cmd string, args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Fprintln(out, "VERSION\tFEATURES\tDETECTOR\tCLASS\tSTATUS\tREPORTS\tWORSE\tCREATED\tREASON")
+		fmt.Fprintln(out, "VERSION\tFEATURES\tDETECTOR\tCLASS\tSTATUS\tPROFILES\tSTATIONS\tNOT WORSE\tWORSE\tCREATED\tREASON")
 		for _, m := range ms {
 			t, err := a.hub.Tally(m.Version)
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(out, "%d\t%d\t%s\t%s\t%s\t%d\t%d\t%s\t%s\n", m.Version, m.Group.FeatureVersion,
-				m.Group.DetectorVersion, m.Group.ChainClass, m.Status, t.Reports, t.Worse,
+			fmt.Fprintf(out, "%d\t%d\t%s\t%s\t%s\t%d\t%d\t%d\t%d\t%s\t%s\n", m.Version, m.Group.FeatureVersion,
+				m.Group.DetectorVersion, m.Group.ChainClass, m.Status, t.Reports, t.Stations, t.NotWorse, t.Worse,
 				m.CreatedAt.UTC().Format(time.DateTime), m.Reason)
 		}
 	case "publish":
@@ -276,7 +278,40 @@ func run(cfg config.Config, cmd string, args []string) error {
 		return found(a.hub.Withdraw(v, *reason, now))
 	case "prune":
 		return a.store.Prune(now, cfg.AccessLogDays)
+	case "backup":
+		dir, err := arg(args, 0, "backup directory")
+		if err != nil {
+			return err
+		}
+		return a.backup(dir, now)
 	}
+	return nil
+}
+
+// backup writes the database and the server key side by side, readable only by the owner: together they are
+// everything needed to restore the server, and the key must never be readable by anyone else.
+func (a *app) backup(dir string, now time.Time) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	stamp := now.UTC().Format("20060102-150405")
+	db := filepath.Join(dir, "vinyl-mind-"+stamp+".sqlite")
+	if err := a.store.Backup(db); err != nil {
+		return err
+	}
+	if err := os.Chmod(db, 0o600); err != nil {
+		return err
+	}
+	key, err := os.ReadFile(a.cfg.ServerKeyPath())
+	if err != nil {
+		return err
+	}
+	keyCopy := filepath.Join(dir, "vinyl-mind-"+stamp+"-server-key.pem")
+	if err := os.WriteFile(keyCopy, key, 0o600); err != nil {
+		return err
+	}
+	fmt.Println(db)
+	fmt.Println(keyCopy)
 	return nil
 }
 

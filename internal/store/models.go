@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/michaelpietzsch/vinyl-mind/spec"
@@ -219,6 +220,36 @@ func (s *Store) Reports(version, stationID int64) ([]Report, error) {
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// StationProfiles is the set of profile IDs a station has used, in contributions or in check reports. It bounds
+// how many profiles a station can report for, so that it cannot invent profiles to fill the database.
+func (s *Store) StationProfiles(stationID int64) (map[string]bool, error) {
+	rows, err := s.db.Query(s.q(`SELECT profile_id FROM contributions WHERE station_id = ?
+		UNION SELECT profile_id FROM check_reports WHERE station_id = ?`), stationID, stationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out[id] = true
+	}
+	return out, rows.Err()
+}
+
+// Backup writes a consistent copy of a SQLite database while the server keeps running. PostgreSQL has its own
+// tools for this (pg_dump).
+func (s *Store) Backup(path string) error {
+	if s.pg {
+		return fmt.Errorf("the database is PostgreSQL: back it up with pg_dump")
+	}
+	_, err := s.db.Exec("VACUUM INTO ?", path)
+	return err
 }
 
 // AccessEntry is one line of the access log.

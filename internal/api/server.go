@@ -37,6 +37,7 @@ type Server struct {
 	perStation *ratelimit.Limiter
 	perAddress *ratelimit.Limiter
 	joins      *ratelimit.Limiter
+	adminFails *ratelimit.Limiter
 }
 
 // New returns the server. now may be nil (the wall clock); tests pass their own.
@@ -54,6 +55,7 @@ func New(cfg config.Config, st *store.Store, key ed25519.PrivateKey, h *hub.Hub,
 		perStation: ratelimit.New(cfg.StationRequestsPerMin, time.Minute),
 		perAddress: ratelimit.New(cfg.AddressRequestsPerMin, time.Minute),
 		joins:      ratelimit.New(cfg.JoinsPerHour, time.Hour),
+		adminFails: ratelimit.New(10, 10*time.Minute),
 	}
 }
 
@@ -77,7 +79,22 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "no such endpoint")
 	})
-	return s.accessLog(s.limitAddress(mux))
+	return s.accessLog(securityHeaders(s.limitAddress(mux)))
+}
+
+// securityHeaders sets what every answer carries. The API is not meant for browsers: nothing may be framed,
+// sniffed, cached or loaded from elsewhere. HSTS belongs to the TLS-terminating proxy.
+func securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
+		h.Set("Referrer-Policy", "no-referrer")
+		h.Set("Cross-Origin-Resource-Policy", "same-origin")
+		h.Set("Cache-Control", "no-store")
+		next.ServeHTTP(w, r)
+	})
 }
 
 // ─── Plumbing ──────────────────────────────────────────────────────────────

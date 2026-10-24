@@ -45,7 +45,14 @@ func (s *Server) admin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "no such endpoint")
 		return
 	}
+	addr := info(r).addr.String()
 	if !s.authorized(r) {
+		// Ten wrong tokens per address in ten minutes, then nothing more is checked from there for a while
+		if !s.adminFails.Allow(addr, s.now()) {
+			w.Header().Set("Retry-After", "600")
+			writeError(w, http.StatusTooManyRequests, "rate_limited", "too many failed attempts")
+			return
+		}
 		w.Header().Set("WWW-Authenticate", `Basic realm="vinyl-mind", charset="UTF-8"`)
 		writeError(w, http.StatusUnauthorized, "unauthorized", "admin token required")
 		return
@@ -126,7 +133,7 @@ func (s *Server) admin(w http.ResponseWriter, r *http.Request) {
 	})
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'")
 	w.Header().Set("X-Frame-Options", "DENY")
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	if err := overview.Execute(w, map[string]any{
@@ -187,10 +194,12 @@ th { color: var(--muted); font-weight: 500; } td.num, th.num { text-align: right
 
 <h2>Models</h2>
 {{if .Models}}<div class="wrap"><table><tr><th class="num">Version</th><th>Group</th><th>Status</th>
-<th class="num">Reports</th><th class="num">Worse</th><th>Created</th><th>Published</th><th>Reason</th></tr>
+<th class="num">Profiles</th><th class="num">Stations</th><th class="num">Not worse</th><th class="num">Worse</th>
+<th>Created</th><th>Published</th><th>Reason</th></tr>
 {{range .Models}}<tr><td class="num">{{.Version}}</td>
 <td>{{.Group.FeatureVersion}} / {{.Group.DetectorVersion}} / {{.Group.ChainClass}}</td><td>{{.Status}}</td>
-<td class="num">{{.Tally.Reports}}</td><td class="num">{{.Tally.Worse}}</td><td>{{t .CreatedAt}}</td>
+<td class="num">{{.Tally.Reports}}</td><td class="num">{{.Tally.Stations}}</td>
+<td class="num">{{.Tally.NotWorse}}</td><td class="num">{{.Tally.Worse}}</td><td>{{t .CreatedAt}}</td>
 <td>{{tp .PublishedAt}}</td><td>{{.Reason}}</td></tr>{{end}}</table></div>
 {{else}}<p class="empty">No models yet.</p>{{end}}
 

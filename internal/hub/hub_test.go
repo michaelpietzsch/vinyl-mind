@@ -196,25 +196,40 @@ func TestPublishAndWithdraw(t *testing.T) {
 	v := outcome(f.combine(t0), "1", spec.ClassAll).Version
 	report(f, "a", "p1", v, 0.09)
 	report(f, "a", "p2", v, 0.105) // within the tolerance: not worse
-	if status(f, v) != store.Candidate {
-		t.Fatal("two reports are not enough")
-	}
 	report(f, "a", "p3", v, 0.08)
 	if status(f, v) != store.Candidate {
 		t.Fatal("three reports from one station are not enough")
 	}
 	report(f, "b", "p1", v, 0.2)
-	if status(f, v) != store.Published {
-		t.Fatalf("three of four not worse, two stations: %s", status(f, v))
+	if status(f, v) != store.Candidate {
+		t.Fatal("one station for, one against is a tie, which waits")
 	}
-	report(f, "c", "p1", v, 0.3)
+	report(f, "c", "p1", v, 0.1)
+	if status(f, v) != store.Published {
+		t.Fatalf("two of three stations not worse: %s", status(f, v))
+	}
 	report(f, "d", "p1", v, 0.3)
-	if status(f, v) != store.Published {
-		t.Fatal("three of six worse is a tie, which waits")
-	}
 	report(f, "e", "p1", v, 0.3)
-	if m, _ := f.st.Model(v); m.Status != store.Withdrawn || m.Reason != "worse on 4 of 7 reporting profiles" {
-		t.Fatalf("most reports worse: %+v", m)
+	if m, _ := f.st.Model(v); m.Status != store.Withdrawn || m.Reason != "worse for 3 of 5 reporting stations" {
+		t.Fatalf("most stations worse: %+v", m)
+	}
+}
+
+func TestOneStationOneVote(t *testing.T) {
+	f := newFixture(t)
+	for _, s := range []string{"a", "b", "c"} {
+		f.contribute(s, "p1", "1", "usb_turntable.mm", 1)
+	}
+	v := outcome(f.combine(t0), "1", spec.ClassAll).Version
+	// One station invents ten profiles that all find the model worse
+	for i := 0; i < 10; i++ {
+		report(f, "x", fmt.Sprint("fake-", i), v, 0.5)
+	}
+	report(f, "a", "p1", v, 0.1)
+	report(f, "b", "p1", v, 0.1)
+	tally, _ := f.hub.Tally(v)
+	if status(f, v) != store.Published || tally.Reports != 12 || tally.Worse != 1 || tally.NotWorse != 2 {
+		t.Fatalf("ten reports of one station must count once: %s %+v", status(f, v), tally)
 	}
 }
 

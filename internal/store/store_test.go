@@ -269,3 +269,46 @@ func TestAccessLog(t *testing.T) {
 		}
 	})
 }
+
+func TestBackupAndStationProfiles(t *testing.T) {
+	eachDB(t, func(t *testing.T, s *Store) {
+		code := "c"
+		_, _ = s.AddInvitation(code, 10, nil, t0)
+		a, _ := s.Join("fp-a", "pk-a", &code, true, 0.25, t0)
+		_, _ = s.PutContribution(a.ID, "profile-aaaaaaaaaaaa", contribution(t), 2, t0)
+		g := Group{FeatureVersion: 1, DetectorVersion: "1", ChainClass: spec.ClassAll}
+		v, _ := s.AddModel(g, "h", func(int64) ([]byte, string, error) { return []byte("{}"), "jws", nil }, t0)
+		_ = s.PutReport(Report{StationID: a.ID, ProfileID: "report-only-profile1", ModelVersion: v,
+			Kinds: map[string]spec.KindCheck{}, Verdict: NotWorse, ReceivedAt: t0})
+		known, err := s.StationProfiles(a.ID)
+		if err != nil || len(known) != 2 || !known["report-only-profile1"] {
+			t.Fatalf("profiles of a station: %v %v", known, err)
+		}
+		// The limit counts profiles that only reported
+		if _, err := s.PutContribution(a.ID, "profile-bbbbbbbbbbbb", contribution(t), 2, t0); !errors.Is(err, ErrTooManyProfiles) {
+			t.Fatalf("a third profile over a limit of two: %v", err)
+		}
+		if _, err := s.PutContribution(a.ID, "report-only-profile1", contribution(t), 2, t0); err != nil {
+			t.Fatalf("a known profile may contribute: %v", err)
+		}
+		path := filepath.Join(t.TempDir(), "copy.sqlite")
+		err = s.Backup(path)
+		if s.pg {
+			if err == nil {
+				t.Fatal("PostgreSQL backups belong to pg_dump")
+			}
+			return
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		c, err := Open("sqlite://" + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer c.Close()
+		if st, _ := c.Station("fp-a"); st == nil || st.Profiles != 2 {
+			t.Fatalf("the copy must hold the data: %+v", st)
+		}
+	})
+}

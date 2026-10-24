@@ -220,6 +220,15 @@ func (s *Server) putReport(w http.ResponseWriter, r *http.Request, st *store.Sta
 			return
 		}
 	}
+	known, err := s.store.StationProfiles(st.ID)
+	if err != nil {
+		s.internal(w, err)
+		return
+	}
+	if !known[id] && len(known) >= s.cfg.MaxProfilesPerStation {
+		writeError(w, http.StatusConflict, "too_many_profiles", "this station has the most profiles the server accepts")
+		return
+	}
 	now := s.now()
 	verdict := hub.Verdict(rep, s.cfg.Publication.Tolerance)
 	if err := s.store.PutReport(store.Report{StationID: st.ID, ProfileID: id, ModelVersion: version,

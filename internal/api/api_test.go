@@ -385,7 +385,7 @@ func TestAdmin(t *testing.T) {
 	if resp, _ := http.Get(e.http.URL + "/admin"); resp.StatusCode != 404 {
 		t.Fatalf("without a token the overview does not exist: %d", resp.StatusCode)
 	}
-	e = newEnv(t, func(c *config.Config) { c.AdminToken = "secret-token-123" })
+	e = newEnv(t, func(c *config.Config) { c.AdminToken = "secret-token-1234567890-abcdefghijkl" })
 	s := e.active()
 	get := func(set func(*http.Request)) (int, string) {
 		req, _ := http.NewRequest("GET", e.http.URL+"/admin", nil)
@@ -401,11 +401,11 @@ func TestAdmin(t *testing.T) {
 	if code, _ := get(func(r *http.Request) { r.SetBasicAuth("x", "wrong") }); code != 401 {
 		t.Fatalf("wrong token: %d", code)
 	}
-	code, page := get(func(r *http.Request) { r.SetBasicAuth("operator", "secret-token-123") })
+	code, page := get(func(r *http.Request) { r.SetBasicAuth("operator", "secret-token-1234567890-abcdefghijkl") })
 	if code != 200 || !strings.Contains(page, s.Fingerprint()[:19]) {
 		t.Fatalf("overview: %d", code)
 	}
-	if code, _ = get(func(r *http.Request) { r.Header.Set("Authorization", "Bearer secret-token-123") }); code != 200 {
+	if code, _ = get(func(r *http.Request) { r.Header.Set("Authorization", "Bearer secret-token-1234567890-abcdefghijkl") }); code != 200 {
 		t.Fatalf("bearer: %d", code)
 	}
 }
@@ -427,5 +427,62 @@ func TestClientAddressBehindProxy(t *testing.T) {
 	resp.Body.Close()
 	if log, _ = e2.store.AccessLog(1); log[0].Address != "127.0.0.1" {
 		t.Fatalf("an untrusted peer's X-Forwarded-For must be ignored, got %q", log[0].Address)
+	}
+}
+
+func TestSecurityHeaders(t *testing.T) {
+	e := newEnv(t, nil)
+	for _, path := range []string{"/v1/server", "/healthz", "/nowhere"} {
+		resp, err := http.Get(e.http.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		h := resp.Header
+		if h.Get("X-Content-Type-Options") != "nosniff" || h.Get("Cache-Control") != "no-store" ||
+			!strings.Contains(h.Get("Content-Security-Policy"), "frame-ancestors 'none'") ||
+			h.Get("Access-Control-Allow-Origin") != "" || h.Get("Server") != "" {
+			t.Errorf("%s: headers %v", path, h)
+		}
+	}
+}
+
+func TestReportsCannotInventProfiles(t *testing.T) {
+	e := newEnv(t, func(c *config.Config) { c.MaxProfilesPerStation = 2 })
+	stations := []*client.Station{e.active(), e.active(), e.active()}
+	for i, s := range stations {
+		do(t, s, "PUT", "/v1/profiles/"+profileA, contributionWith(t, 1+0.01*float64(i)), 200)
+	}
+	if _, err := e.hub.Combine(e.now, false); err != nil {
+		t.Fatal(err)
+	}
+	var ms struct{ Candidate map[string]any }
+	_ = do(t, stations[0], "GET", "/v1/models?feature_version=1&detector_version=1", nil, 200).JSON(&ms)
+	v := int64(ms.Candidate["version"].(float64))
+	report := example(t, "check-report.json")
+	delete(report["kinds"].(map[string]any), "tick")
+	path := func(profile string) string { return fmt.Sprintf("/v1/profiles/%s/checks/%d", profile, v) }
+	do(t, stations[0], "PUT", path(profileA), report, 200)
+	do(t, stations[0], "PUT", path("profile-invented-0001"), report, 200)
+	if r := do(t, stations[0], "PUT", path("profile-invented-0002"), report, 409); errorCode(r) != "too_many_profiles" {
+		t.Fatalf("a third profile: %s", r.Body)
+	}
+}
+
+func TestAdminTokenGuessing(t *testing.T) {
+	e := newEnv(t, func(c *config.Config) { c.AdminToken = strings.Repeat("x", 40) })
+	codes := map[int]int{}
+	for i := 0; i < 12; i++ {
+		req, _ := http.NewRequest("GET", e.http.URL+"/admin", nil)
+		req.SetBasicAuth("x", fmt.Sprint("guess-", i))
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		codes[resp.StatusCode]++
+	}
+	if codes[401] != 10 || codes[429] != 2 {
+		t.Fatalf("after ten wrong tokens the address is held back: %v", codes)
 	}
 }

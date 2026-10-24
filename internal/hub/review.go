@@ -21,14 +21,18 @@ func Verdict(r spec.CheckReport, tolerance float64) string {
 	return store.NotWorse
 }
 
-// Tally counts the reports of active stations on one model.
+// Tally counts the reports of active stations on one model. Each station has one vote, the majority of its
+// profiles' verdicts (a tie is no vote), so that a station cannot outvote the others by reporting many profiles.
 type Tally struct {
-	Reports, Stations, Worse int
+	Reports  int // reporting profiles
+	Stations int // reporting stations
+	Worse    int // stations that found the model worse
+	NotWorse int // stations that found it not worse
 }
 
-// Review applies the rules of docs/aggregation.md after a new check report: a model that is worse for most
-// reporting profiles is withdrawn; a candidate that is not worse for most of them, with reports from enough
-// stations, is published. Ties wait for the next report.
+// Review applies the rules of docs/aggregation.md after a new check report. With reports from enough profiles and
+// stations, a model that most stations find worse is withdrawn, and a candidate that most find not worse is
+// published. Ties wait for the next report.
 func (h *Hub) Review(version int64, now time.Time) error {
 	if !h.cfg.Publication.Auto {
 		return nil
@@ -37,20 +41,20 @@ func (h *Hub) Review(version int64, now time.Time) error {
 	if err != nil || m == nil || m.Status == store.Withdrawn {
 		return err
 	}
-	t, reports, err := h.tally(version)
-	if err != nil || t.Reports < h.cfg.Publication.MinReports {
+	t, votes, err := h.tally(version)
+	if err != nil || t.Reports < h.cfg.Publication.MinReports || t.Stations < h.cfg.Publication.MinReportStations {
 		return err
 	}
 	decided := ""
 	switch {
-	case 2*t.Worse > t.Reports:
-		reason := fmt.Sprintf("worse on %d of %d reporting profiles", t.Worse, t.Reports)
+	case t.Worse > t.NotWorse:
+		reason := fmt.Sprintf("worse for %d of %d reporting stations", t.Worse, t.Stations)
 		if _, err := h.store.SetModelStatus(version, store.Withdrawn, reason, now); err != nil {
 			return err
 		}
 		h.log.Info("model withdrawn", "version", version, "reason", reason)
 		decided = store.Worse
-	case m.Status == store.Candidate && 2*t.Worse < t.Reports && t.Stations >= h.cfg.Publication.MinReportStations:
+	case m.Status == store.Candidate && t.NotWorse > t.Worse:
 		if _, err := h.store.SetModelStatus(version, store.Published, "", now); err != nil {
 			return err
 		}
@@ -66,14 +70,8 @@ func (h *Hub) Review(version int64, now time.Time) error {
 	if err != nil {
 		return err
 	}
-	agree := map[int64]bool{}
-	for _, r := range reports {
-		if r.Verdict == decided {
-			agree[r.StationID] = true
-		}
-	}
 	for _, st := range stations {
-		if agree[st.ID] {
+		if votes[st.ID] == decided {
 			if err := h.gainTrust(&st, now); err != nil {
 				return err
 			}
@@ -82,27 +80,44 @@ func (h *Hub) Review(version int64, now time.Time) error {
 	return nil
 }
 
-func (h *Hub) tally(version int64) (Tally, []store.Report, error) {
+// tally returns the counts and each station's vote.
+func (h *Hub) tally(version int64) (Tally, map[int64]string, error) {
 	all, err := h.store.Reports(version, 0)
 	if err != nil {
 		return Tally{}, nil, err
 	}
 	var t Tally
-	var reports []store.Report
-	stations := map[int64]bool{}
+	worse, notWorse := map[int64]int{}, map[int64]int{}
 	for _, r := range all {
 		if r.StationStatus != store.Active {
 			continue
 		}
-		reports = append(reports, r)
-		stations[r.StationID] = true
 		t.Reports++
 		if r.Verdict == store.Worse {
-			t.Worse++
+			worse[r.StationID]++
+		} else {
+			notWorse[r.StationID]++
 		}
 	}
-	t.Stations = len(stations)
-	return t, reports, nil
+	votes := map[int64]string{}
+	for id := range worse {
+		votes[id] = ""
+	}
+	for id := range notWorse {
+		votes[id] = ""
+	}
+	t.Stations = len(votes)
+	for id := range votes {
+		switch {
+		case worse[id] > notWorse[id]:
+			votes[id] = store.Worse
+			t.Worse++
+		case notWorse[id] > worse[id]:
+			votes[id] = store.NotWorse
+			t.NotWorse++
+		}
+	}
+	return t, votes, nil
 }
 
 // Tally reports the counts of one model's check reports (for the overview and the command line).

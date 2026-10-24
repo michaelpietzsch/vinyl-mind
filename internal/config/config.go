@@ -144,6 +144,9 @@ func (c *Config) Check() error {
 	if p.MinReports < 1 || p.MinReportStations < 1 {
 		bad("publication: min_reports and min_report_stations must be at least 1")
 	}
+	if c.AdminToken != "" && len(c.AdminToken) < 32 {
+		bad("VINYL_MIND_ADMIN_TOKEN must have at least 32 characters (for example: openssl rand -base64 32)")
+	}
 	if c.ClockSkewS < 30 {
 		bad("clock_skew_s must be at least 30")
 	}

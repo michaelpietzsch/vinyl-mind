@@ -60,12 +60,15 @@ func (s *Store) PutContribution(stationID int64, profileID string, d *spec.Contr
 			return err
 		}
 		if len(old) == 0 {
-			var n int
-			if err := tx.QueryRow(s.q("SELECT COUNT(*) FROM contributions WHERE station_id = ?"),
-				stationID).Scan(&n); err != nil {
+			// Profiles that only reported count too: the limit is on the profiles a station uses at all
+			var n, known int
+			if err := tx.QueryRow(s.q(`SELECT COUNT(*), COALESCE(SUM(CASE WHEN profile_id = ? THEN 1 ELSE 0 END), 0)
+				FROM (SELECT profile_id FROM contributions WHERE station_id = ?
+				      UNION SELECT profile_id FROM check_reports WHERE station_id = ?) p`), profileID, stationID,
+				stationID).Scan(&n, &known); err != nil {
 				return err
 			}
-			if n >= maxProfiles {
+			if known == 0 && n >= maxProfiles {
 				return ErrTooManyProfiles
 			}
 		}
