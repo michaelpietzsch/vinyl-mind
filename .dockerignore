@@ -1,0 +1,11 @@
+.git
+.github
+.graphify
+.graphifyignore
+data
+*.sqlite
+*.sqlite-*
+*.pem
+*.toml
+.env
+/vinyl-mind

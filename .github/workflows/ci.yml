@@ -1,0 +1,203 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then echo "Not formatted:"; echo "$unformatted"; exit 1; fi
+      - name: go vet
+        run: go vet ./...
+      - name: go.mod and go.sum are tidy
+        run: go mod tidy -diff
+      - name: Known vulnerabilities
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+  test:
+    name: Tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Linux is where the server runs; macOS and Windows because operators run the command line there too
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Tests with the race detector
+        if: runner.os == 'Linux'
+        run: go test -race -count=1 -coverprofile=coverage.out ./...
+      - name: Tests
+        if: runner.os != 'Linux'
+        run: go test -count=1 ./...
+      - name: Coverage
+        if: runner.os == 'Linux'
+        run: |
+          {
+            echo '### Coverage'
+            echo '```'
+            go tool cover -func=coverage.out | tail -1
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  postgres:
+    name: Tests on PostgreSQL
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      VINYL_MIND_TEST_POSTGRES: postgres://postgres:test@localhost:5432/postgres?sslmode=disable
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Storage tests on SQLite and PostgreSQL
+        run: |
+          set -o pipefail
+          go test -count=1 -v ./internal/store/ | tee store.log
+          # The PostgreSQL runs are skipped silently without the database; make sure they really ran
+          grep -q -- '--- PASS: .*/postgres' store.log
+
+  simulate:
+    name: Simulation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Simulated stations
+        run: |
+          go run ./tools/simulate | tee simulate.txt
+          { echo '### Simulation'; echo '```'; cat simulate.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    name: Build (${{ matrix.goos }}/${{ matrix.goarch }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - { goos: linux, goarch: amd64 }
+          - { goos: linux, goarch: arm64 }
+          - { goos: darwin, goarch: arm64 }
+          - { goos: windows, goarch: amd64 }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Static binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: go build -trimpath -ldflags "-s -w -X main.version=${GITHUB_SHA::12}" -o dist/ ./cmd/vinyl-mind
+      - uses: actions/upload-artifact@v7
+        with:
+          name: vinyl-mind-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/
+          retention-days: 14
+
+  container:
+    name: Container image
+    runs-on: ubuntu-latest
+    needs: [lint, test, postgres]
+    permissions:
+      contents: read
+      packages: write   # push to the GitHub Container Registry with the workflow's own token
+    env:
+      # Docker Hardened Images need a (free) Docker account. Without the secrets (forks, a fresh repository) the
+      # image is built and tested on public images, but never published: what is published is always hardened.
+      HAS_DHI: ${{ secrets.DHI_USERNAME != '' && secrets.DHI_TOKEN != '' }}
+      PUBLISH: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Log in to dhi.io
+        if: env.HAS_DHI == 'true'
+        env:
+          DHI_USERNAME: ${{ secrets.DHI_USERNAME }}
+          DHI_TOKEN: ${{ secrets.DHI_TOKEN }}
+        run: echo "$DHI_TOKEN" | docker login dhi.io --username "$DHI_USERNAME" --password-stdin
+      - name: Build arguments
+        run: |
+          version="${GITHUB_SHA::12}"
+          case "$GITHUB_REF" in refs/tags/v*) version="${GITHUB_REF#refs/tags/v}" ;; esac
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          args="--build-arg VERSION=$version"
+          if [ "$HAS_DHI" != "true" ]; then
+            echo "::warning::DHI_USERNAME/DHI_TOKEN not set: testing on public images, nothing is published"
+            args="$args --build-arg BUILD_IMAGE=golang:1.26-alpine"
+            args="$args --build-arg RUNTIME_IMAGE=gcr.io/distroless/static-debian12:nonroot"
+          fi
+          echo "BUILD_ARGS=$args" >> "$GITHUB_ENV"
+      - name: Builder
+        run: docker buildx create --use --name ci
+      - name: Build for the test
+        run: |
+          read -ra args <<< "$BUILD_ARGS"
+          docker buildx build "${args[@]}" --platform linux/amd64 --load -t vinyl-mind:ci .
+          docker image ls vinyl-mind:ci
+      - name: Smoke test
+        run: |
+          docker run -d --name vm --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges:true \
+            -p 8080:8080 vinyl-mind:ci
+          for _ in $(seq 1 30); do
+            [ "$(docker inspect -f '{{.State.Health.Status}}' vm)" = healthy ] && break
+            sleep 2
+          done
+          docker inspect -f '{{.State.Health.Status}}' vm | grep -qx healthy
+          curl -fsS localhost:8080/v1/server | tee /dev/stderr | grep -q '"fingerprint":"SHA256:'
+          test "$(curl -s -o /dev/null -w '%{http_code}' -X PUT localhost:8080/v1/profiles/profile-aaaaaaaaaaaa)" = 401
+          docker exec vm /usr/local/bin/vinyl-mind fingerprint
+          docker exec vm /usr/local/bin/vinyl-mind invite
+      - name: Logs
+        if: always()
+        run: docker logs vm || true
+      - name: Publish to ghcr.io
+        if: env.PUBLISH == 'true' && env.HAS_DHI == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          tags=("$image:sha-${GITHUB_SHA::12}")
+          case "$GITHUB_REF" in
+            refs/heads/main) tags+=("$image:main") ;;
+            refs/tags/v*) tags+=("$image:$VERSION" "$image:${VERSION%.*}" "$image:latest") ;;
+          esac
+          read -ra args <<< "$BUILD_ARGS"
+          for t in "${tags[@]}"; do args+=(-t "$t"); done
+          # Provenance and SBOM travel with the image, so that anyone pulling it can see how and from what it was built
+          docker buildx build "${args[@]}" --platform linux/amd64,linux/arm64 \
+            --provenance=mode=max --sbom=true --push .
+          { echo "Published:"; printf -- "- %s\n" "${tags[@]}"; } >> "$GITHUB_STEP_SUMMARY"

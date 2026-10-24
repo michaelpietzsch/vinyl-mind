@@ -1,0 +1,29 @@
+# Example: Vinyl-Mind behind a reverse proxy that terminates TLS (see docs/operations.md). The proxy reaches the
+# container over a shared Docker network; the container publishes no port of its own. Copy, adjust, and keep the
+# real file and its secrets out of version control.
+services:
+  vinyl-mind:
+    build: .
+    image: vinyl-mind:local
+    restart: unless-stopped
+    read_only: true
+    tmpfs: [/tmp]          # SQLite's temporary files; the rest of the file system stays read-only
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 256m
+    cpus: 0.5
+    environment:
+      # A long random token for the read-only overview at /admin; leave it unset to switch the overview off
+      VINYL_MIND_ADMIN_TOKEN: ${VINYL_MIND_ADMIN_TOKEN:-}
+      VINYL_MIND_CONFIG: /etc/vinyl-mind/config.toml
+    volumes:
+      - vinyl-mind-data:/data
+      - ./config.toml:/etc/vinyl-mind/config.toml:ro
+    networks: [proxy]
+
+networks:
+  proxy:
+    external: true   # created once: docker network create proxy
+
+volumes:
+  vinyl-mind-data:   # database and server signing key: back this up
