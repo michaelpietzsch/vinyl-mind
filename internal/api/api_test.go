@@ -488,3 +488,30 @@ func TestAdminTokenGuessing(t *testing.T) {
 		t.Fatalf("after ten wrong tokens the address is held back: %v", codes)
 	}
 }
+
+func TestBodiesNeedALength(t *testing.T) {
+	e := newEnv(t, nil)
+	s := e.active()
+	body := []byte(`{"spec":"vinyl-mind/contribution"}`)
+	// A body of unknown length goes out chunked, without Content-Length
+	req, _ := http.NewRequest("PUT", e.http.URL+"/v1/profiles/"+profileA, io.NopCloser(bytes.NewReader(body)))
+	req.ContentLength = -1
+	req.Header = auth.Sign(s.Key, e.srv.Fingerprint(), "PUT", "/v1/profiles/"+profileA, body, e.now)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusLengthRequired {
+		t.Fatalf("chunked body: %d, want 411", resp.StatusCode)
+	}
+	// An announced length over the limit is refused before anything is read
+	req, _ = http.NewRequest("PUT", e.http.URL+"/v1/profiles/"+profileA, bytes.NewReader(make([]byte, spec.MaxBody+1)))
+	if resp, err = http.DefaultClient.Do(req); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("announced oversized body: %d, want 413", resp.StatusCode)
+	}
+}

@@ -210,6 +210,16 @@ func (s *Server) internal(w http.ResponseWriter, err error) {
 
 // readBody reads at most spec.MaxBody bytes; a larger body is refused before it is parsed.
 func readBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
+	// A body must announce its length: an oversized one is then refused before it is read, also when the request
+	// did not come through a proxy that checks it. Every client sends small documents of known length.
+	if r.ContentLength < 0 && (r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodPatch) {
+		writeError(w, http.StatusLengthRequired, "length_required", "a body needs a Content-Length")
+		return nil, false
+	}
+	if r.ContentLength > spec.MaxBody {
+		writeError(w, http.StatusRequestEntityTooLarge, "too_large", "body larger than the server accepts")
+		return nil, false
+	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, spec.MaxBody))
 	var tooLarge *http.MaxBytesError
 	if errors.As(err, &tooLarge) {

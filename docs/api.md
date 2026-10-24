@@ -14,6 +14,9 @@ minimal station in Go that uses all of them.
   `spec/signing.md`. The path and query are signed as sent.
 - **JSON** in both directions, UTF-8, at most 16 KiB per request body. Duplicate keys, unknown fields and
   numbers that are not finite are refused.
+- **Bodies announce their length.** `POST` and `PUT` carry `Content-Length`; a chunked body without it is refused
+  with `411 length_required`, a larger one with `413 too_large` before it is read. HTTP libraries send the length
+  whenever the body is given as bytes rather than as a stream.
 - **Times** are Unix seconds.
 - **Errors** are `{"error": "<code>", "message": "<text for people>"}` with a fitting HTTP status. Clients decide
   by the code, people read the message.

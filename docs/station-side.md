@@ -66,7 +66,9 @@ As described in vinyl-check's `docs/architecture.md`:
    `active` or `pending`; poll `GET /v1/me` while pending.
 
 Every later request is signed as `spec/signing.md` describes, with a new nonce each time. The test vector there
-checks the encodings.
+checks the encodings. Bodies are sent as bytes with `Content-Length` (in Python: `content=` or `data=` with
+`bytes`, never a generator or file stream), since chunked bodies are refused; the signature covers exactly those
+bytes anyway.
 
 ## Contributing
 
