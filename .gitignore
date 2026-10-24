@@ -1,0 +1,19 @@
+# Build output
+/vinyl-mind
+/dist/
+*.test
+*.out
+
+# macOS / editors
+.DS_Store
+.vscode/
+.idea/
+
+# Runtime data of a local instance: database, server signing key, configuration
+data/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.pem
+config.toml
+.env
