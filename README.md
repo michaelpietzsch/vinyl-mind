@@ -77,6 +77,7 @@ go build ./cmd/vinyl-mind
 | `internal/store` | storage on SQLite or PostgreSQL |
 | `internal/auth`, `internal/keys` | signed requests, keys, signed models |
 | `internal/sim`, `tools/simulate` | the simulation of stations |
+| `tools/probe` | checks a running server from the outside, as a station reaches it |
 | `internal/client` | a minimal station, for the tests and as an example |
 
 Contributions are welcome, see [CONTRIBUTING.md](CONTRIBUTING.md); security issues go to [SECURITY.md](SECURITY.md).

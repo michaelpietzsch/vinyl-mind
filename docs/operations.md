@@ -83,6 +83,14 @@ vinyl-mind.example.org {
 `GET /v1/server` is unsigned, cheap and answers 200: a good target for external monitoring of reachability and
 certificate. `GET /healthz` is for the proxy and the container.
 
+## Checking from the outside
+
+`go run ./tools/probe -url https://vinyl-mind.example.org -fingerprint SHA256:…` checks a running server the way
+a station reaches it: the server key and the clock, security headers and HSTS, that `/admin` and `/healthz` are
+blocked at the proxy, that unsigned and unknown requests and oversized bodies are refused. With
+`-invitation <code>` (from `vinyl-mind invite -uses 1 -days 1`) it also joins, makes signed requests with a query
+and leaves again, which deletes the test station; only this shows that the proxy passes path and body unchanged.
+
 ## Daily work
 
 Everything that changes the server is a command; over the network nothing can be changed.
