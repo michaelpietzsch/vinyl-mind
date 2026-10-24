@@ -1,0 +1,114 @@
+# What a station needs
+
+Vinyl-Mind is the hub; vinyl-check is the station. This page lists what vinyl-check has to implement to take part,
+in the order it is needed. It is written against vinyl-check 1.0.1 and its `learning.py`. The exchange itself is
+defined in `spec/` and `docs/api.md`; `internal/client` is a minimal client in Go that does all of it.
+
+## Before anything is sent
+
+### 1. A detector version
+
+vinyl-check has no version for its detector today. Every contribution and every model carries a
+`detector_version`, and the hub never combines contributions of different detector versions, because a changed
+detector changes what the features measure. vinyl-check needs one constant (for example `detect.VERSION = "1"`)
+that is raised whenever the detection or the features change, and it is sent as a string.
+
+### 2. One model per turntable profile
+
+`learning.training_data()` collects the examples of all recordings into one model. A contribution belongs to one
+turntable profile, so training must run per profile (`recordings.profile_id`), with the same rules as today
+(`MIN_PER_CLASS`, `MIN_MASTER_RECORDINGS`, cross-check per recording, `MANUAL_WEIGHT`). The model over all
+profiles may stay for the station's own use.
+
+### 3. The shared scaling
+
+`_fit()` standardises with the data's own mean and spread (`mu`, `sd`), so weights of two stations mean different
+things. A contribution is sent in the fixed **shared scaling** of `spec/v1/features.json`. The conversion is exact
+and needs no retraining (`spec/README.md`):
+
+```python
+coef[i + 1] = b[i + 1] * scale[i] / sd[i]
+coef[0]     = b[0] + sum(b[i + 1] / sd[i] * (center[i] - mu[i]) for i in range(10))
+```
+
+The order of the features is `learning.FEATURES` (feature version 1 is exactly today's ten features). A global
+model can be used directly with `_predict()` by passing `{"mu": center, "sd": scale, "b": coef}`.
+
+### 4. The chain class
+
+A profile needs two coarse facts the station does not store yet: `chain.source` (`usb_turntable` or
+`turntable_interface`) and `chain.cartridge` (`mm`, `mc` or `unknown`). Two fields on the profile, asked for in the
+profile dialog, with `unknown` allowed for the cartridge.
+
+## Settings → Vinyl-Mind
+
+As described in vinyl-check's `docs/architecture.md`:
+
+| Setting | Behaviour |
+|---|---|
+| Contribute to Vinyl-Mind | off by default; sends the contributions of all profiles after retraining |
+| Use the global model | off by default; fetches models, checks them, uses them as the prior |
+| Server | the default server's URL, defined in one place in the code and overridable in the configuration file; *Reset to default* |
+| Server key | fingerprint of the server key, shown after the first connection, to compare with the one the operator publishes |
+| Join | with an optional invitation code |
+| Status | joined or waiting for approval, last contribution, model version in use, result of the last check |
+| What is sent | the exact JSON of the next contribution, before anything leaves the station |
+| Leave | deletes the station on the server (`DELETE /v1/me`) and its key locally |
+
+## Joining
+
+1. `GET /v1/server`: check that `public_key` matches `fingerprint`, show the fingerprint, store the key. A different
+   key later is refused unless the user accepts it explicitly. Compare `time` with the local clock and warn if they
+   are more than a minute apart: signed requests are refused beyond 300 seconds.
+2. Create an Ed25519 key pair **per server** (Python: `cryptography`), keep the private key in the station's state
+   directory, readable only by the service user, never in the database export or a report.
+3. `POST /v1/join` with the public key and the code, signed with the new key (`spec/signing.md`). The answer is
+   `active` or `pending`; poll `GET /v1/me` while pending.
+
+Every later request is signed as `spec/signing.md` describes, with a new nonce each time. The test vector there
+checks the encodings.
+
+## Contributing
+
+- Each profile gets a random **profile ID** of its own (16 random bytes, base64url), stored with the profile. A new
+  cartridge or a new alignment is a new profile, and so a new ID.
+- After a retraining, and only while no recording runs, send `PUT /v1/profiles/{id}` for each profile that has at
+  least one kind with a fitted and cross-checked model (`usable` or not: the hub filters by the self-check). From
+  the station's model per kind: `coef` (converted as above), `n_real`, `n_false`, `n_manual` (the `manual` count),
+  `n_master` (`n_real + n_false - n_manual`), `master_recordings`, `cv_err_est`, `cv_err_raw`, optionally `auc`
+  (`_auc()` exists but is not reported by `train()` yet).
+- When offline or on errors: keep the newest contribution per profile, retry with growing pauses, honour
+  `Retry-After` on 429. An unchanged contribution costs nothing on the server.
+
+## Using the global model
+
+1. Poll `GET /v1/models?feature_version=1&detector_version=…&chain_class=…` a few times a day with `If-None-Match`;
+   usually the answer is 304.
+2. For a new `published` or `candidate` entry: verify the JWS with the accepted server key **before** parsing the
+   payload (`alg` EdDSA, `kid` equal to the accepted fingerprint, payload `server` equal to `kid`), then validate it
+   against `spec/v1/global-model.schema.json` and check that feature and detector version are the station's own.
+3. **Check it** on the profile's own recordings with a master: estimate the real clicks per recording once with the
+   local model and once with the global one, as the cross-check does, and report both errors per kind with
+   `PUT /v1/profiles/{id}/checks/{version}`.
+4. **Adopt it** only if it is not worse than the local model on those recordings. Adopting means using it as the
+   **prior** of the profile's training: train in the shared scaling and replace the ridge penalty towards zero by a
+   penalty towards the global coefficients. The simulation (`docs/aggregation.md`) found two things:
+   - the **intercept** must be pulled towards the global intercept too; left free, it adapts to the few records a
+     new profile has seen and gives most of the benefit away;
+   - a prior strength of about **100** (instead of `L2 = 1`) worked best for profiles with few judgements. The
+     station's own check on its master recordings decides in the end, so the strength can also be chosen by it.
+5. When `GET /v1/models/{version}` reports the model in use as `withdrawn`, drop it and fall back to the local
+   model or the newest published one.
+
+## Privacy on the station
+
+The preview under *What is sent* shows exactly the JSON of the contribution. Nothing else ever goes to the hub: no
+audio, no features of single detections, no record titles, notes, Discogs data, names or serial numbers
+(`docs/privacy.md`).
+
+## Later
+
+- **Feature version 2**: the features relative to the measured turntable profile (vinyl-check stage 0). It gets its
+  own directory in `spec/` with its own fixed scaling; stations send it once they compute it.
+- The fixed scaling of feature version 1 is provisional. Before real contributions are accepted it is replaced by
+  the means and spreads of real stations, which is a change of the specification and therefore coordinated.

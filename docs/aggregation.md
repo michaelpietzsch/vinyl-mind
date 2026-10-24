@@ -94,11 +94,15 @@ A report's **verdict** is *worse* when the global model's error, averaged over t
 local model's by more than `tolerance` (0.01); otherwise *not worse*. Only reports of active stations count, one
 per profile and model.
 
+**Each station has one vote**: the majority of its profiles' verdicts, and no vote on a tie. Counting profiles
+instead would let a station that invents profiles decide alone; profiles that only report also count against the
+station's profile limit (`max_profiles_per_station`).
+
 | Situation | Rule (with `auto = true`) |
 |---|---|
-| a candidate has at least `min_reports` (3) reports from at least `min_report_stations` (2) stations, and more of them are not worse than worse | published |
-| a candidate or a published model has at least `min_reports` reports, and more of them are worse than not worse | withdrawn |
-| as many worse as not worse | wait for the next report |
+| reports from at least `min_reports` (3) profiles of at least `min_report_stations` (2) stations, and more stations find a candidate not worse than worse | published |
+| the same number of reports, and more stations find a candidate or a published model worse than not worse | withdrawn |
+| as many stations for as against, or not enough reports yet | wait for the next report |
 
 The newest published model of a group is the one stations get; when it is withdrawn, the previous published one
 is current again. The operator can publish or withdraw by hand (`vinyl-mind publish`, `vinyl-mind withdraw`), which

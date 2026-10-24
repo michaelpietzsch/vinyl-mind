@@ -1,0 +1,126 @@
+# Running a Vinyl-Mind server
+
+Anyone can run an instance, for example a studio for its own stations. Nothing in the server depends on a
+particular host name. This page uses `vinyl-mind.example.org` as a placeholder.
+
+## What you need
+
+- A host with Docker (or any machine for the static binary).
+- A reverse proxy that terminates TLS for a host name of its own, for example Caddy, nginx or Traefik.
+- About 256 MB of memory and a fraction of a CPU. The data is a few megabytes.
+
+The server makes **no outgoing connections**: no external APIs, not even DNS. It can run in a network without a
+way to the internet.
+
+## Container
+
+```sh
+docker build -t vinyl-mind:0.1.0 .                       # hardened bases need `docker login dhi.io`, see Dockerfile
+mkdir conf && cp config.example.toml conf/config.toml    # adjust, at least join_mode and trusted_proxies
+docker network create proxy                              # the network the reverse proxy shares with the server
+docker compose -f compose.example.yml up -d
+docker compose exec vinyl-mind vinyl-mind fingerprint    # publish this fingerprint for your stations
+```
+
+The image runs as UID 65532 on a read-only file system with a health check of its own (`vinyl-mind healthcheck`).
+It has no shell. `compose.example.yml` adds `tmpfs /tmp`, no capabilities, no new privileges and resource limits.
+Images built in this repository's CI are published to the GitHub Container Registry with provenance and an SBOM.
+
+Without Docker: `CGO_ENABLED=0 go build ./cmd/vinyl-mind`, then run `vinyl-mind serve` as an unprivileged user
+with `VINYL_MIND_DATA_DIR` pointing to a directory only that user can read.
+
+## Configuration
+
+`config.example.toml` lists every setting with its default; unknown keys stop the server instead of being ignored.
+The server reads the file at start, so restart it after a change (`docker compose up -d --force-recreate`).
+Paths and secrets come from the environment:
+
+| Variable | Meaning |
+|---|---|
+| `VINYL_MIND_DATA_DIR` | database and server key (`/data` in the container) |
+| `VINYL_MIND_CONFIG` | path of the TOML file |
+| `VINYL_MIND_DATABASE_URL` | `postgres://…` to use PostgreSQL instead of SQLite; nothing else changes |
+| `VINYL_MIND_ADMIN_TOKEN` | at least 32 characters; switches on the read-only overview at `/admin` |
+| `VINYL_MIND_LISTEN` | address to listen on, default `:8080` |
+
+Two settings matter most:
+
+- `join_mode`: `invitation` admits only stations with a code from `vinyl-mind invite`; `approval` lets stations
+  without a code wait until `vinyl-mind approve`. For a server on the internet, `invitation` is the safer choice.
+- `trusted_proxies`: the address of your reverse proxy. Only from there is `X-Forwarded-For` believed; without it,
+  rate limits and the access log see the proxy's address for every client.
+
+## Reverse proxy
+
+The proxy must
+
+- **terminate TLS** (and set HSTS); the server itself only speaks HTTP and never sees a certificate,
+- serve Vinyl-Mind at the **root of its own host name** and pass the **path unchanged**: stations sign the path,
+  so any rewriting breaks every request,
+- pass `Host` and set `X-Forwarded-For`,
+- block `/admin` from the outside (the overview also needs the token, but has no business on the internet),
+- limit request bodies to 16 KiB.
+
+Example for Caddy:
+
+```
+vinyl-mind.example.org {
+	request_body {
+		max_size 16KB
+	}
+	handle /admin* {
+		respond 403
+	}
+	handle /v1/* {
+		reverse_proxy vinyl-mind:8080
+	}
+	handle {
+		respond 404
+	}
+}
+```
+
+`GET /v1/server` is unsigned, cheap and answers 200: a good target for external monitoring of reachability and
+certificate. `GET /healthz` is for the proxy and the container.
+
+## Daily work
+
+Everything that changes the server is a command; over the network nothing can be changed.
+
+| Command | |
+|---|---|
+| `vinyl-mind fingerprint` | the server key's fingerprint, to publish |
+| `vinyl-mind invite -uses 1 -days 14` | a new invitation code, shown once and kept only as a hash |
+| `vinyl-mind invitations`, `revoke-invitation <id>` | list and revoke codes |
+| `vinyl-mind stations` | stations with status, trust, profiles and last contact |
+| `vinyl-mind approve <fingerprint>` | admit a waiting station (`join_mode = "approval"`) |
+| `vinyl-mind revoke <fingerprint>` | revoke a key and delete what the station sent |
+| `vinyl-mind combine [-dry-run]` | combine now instead of waiting for the background job |
+| `vinyl-mind models` | models with status and check reports |
+| `vinyl-mind publish <version>`, `withdraw <version> -reason "…"` | the operator's decisions, for example at the start, when too few stations report |
+| `vinyl-mind backup <dir>` | consistent copy of database and server key, while the server runs |
+
+In a container: `docker compose exec vinyl-mind vinyl-mind <command>`.
+
+## The server key and backups
+
+`server-key.pem` in the data directory signs every global model.
+
+- **If it is lost**, every station has to accept a new key explicitly; the server cannot prove it is the same one.
+- **If it leaks**, anyone can sign models in the server's name.
+
+Back up the data directory with `vinyl-mind backup <dir>` (SQLite `VACUUM INTO` plus the key, both readable only by
+the owner), encrypt the backup and keep it off the server. With PostgreSQL, use `pg_dump` for the database and copy
+the key file. Rotating the key is not supported yet (see the open points in the README).
+
+## Updates
+
+Replace the image and restart. The database records its schema version; a server older than the database refuses
+to start rather than damaging it. Stations keep working while the server is down: they retry later and keep using
+their local models.
+
+## Logs
+
+The server writes to standard error: start and stop, new candidates, published and withdrawn models, trust changes
+and errors, never request bodies. The access log with client addresses is in the database and deleted after
+`access_log_days` (14). See `docs/privacy.md` for everything that is stored.

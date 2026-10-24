@@ -17,6 +17,8 @@ minimal station in Go that uses all of them.
 - **Times** are Unix seconds.
 - **Errors** are `{"error": "<code>", "message": "<text for people>"}` with a fitting HTTP status. Clients decide
   by the code, people read the message.
+- **Not for browsers.** There are no CORS headers, and every answer says `nosniff`, `no-store`, no framing and no
+  referrer.
 - **Profile IDs** are chosen by the station at random: 16 to 64 characters of `A–Z a–z 0–9 _ -`, at least 128
   random bits (for example 16 random bytes in base64url). They never contain names or serial numbers.
 
@@ -138,6 +140,7 @@ global model on the profile's own recordings with a master, and whether the stat
 | 200 | `{"verdict": "not_worse" \| "worse", "model_status": "…"}` | stored; the model may have been published or withdrawn by it |
 | 404 | `not_found` | no such model |
 | 409 | `withdrawn` | the model has been withdrawn (or superseded by a newer candidate) |
+| 409 | `too_many_profiles` | a new profile ID beyond `max_profiles`: profiles that only report count too |
 | 422 | `invalid` | the report does not meet the specification, or names a kind the model does not have |
 
 A profile does not need a contribution of its own to report: a station may use global models without contributing.

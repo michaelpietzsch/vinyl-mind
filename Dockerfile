@@ -13,7 +13,10 @@ FROM --platform=$BUILDPLATFORM ${BUILD_IMAGE} AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
-COPY . .
+# Only what the binary is built from: nothing else of the working copy reaches the build
+COPY cmd ./cmd
+COPY internal ./internal
+COPY spec ./spec
 ARG VERSION=dev
 ARG TARGETOS TARGETARCH
 # No cgo (SQLite is pure Go), so the binary is static and the runtime image needs no libc

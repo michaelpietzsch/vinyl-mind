@@ -18,7 +18,9 @@ services:
       VINYL_MIND_CONFIG: /etc/vinyl-mind/config.toml
     volumes:
       - vinyl-mind-data:/data
-      - ./config.toml:/etc/vinyl-mind/config.toml:ro
+      # The directory, not the file: tools that replace a file (rsync, editors) would leave a file mount pointing at
+      # the old one. The server reads the configuration at start; restart it after a change.
+      - ./conf:/etc/vinyl-mind:ro
     networks: [proxy]
 
 networks:
