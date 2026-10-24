@@ -9,10 +9,12 @@
 package main
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"flag"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -35,6 +37,8 @@ func main() {
 	url := flag.String("url", "", "base URL of the server, e.g. https://vinyl-mind.example.org")
 	want := flag.String("fingerprint", "", "expected fingerprint of the server key")
 	invitation := flag.String("invitation", "", "invitation code for a full join, signed requests and leave")
+	connect := flag.String("connect", "", "connect to this IP address instead of resolving the host name "+
+		"(like curl --resolve: TLS still checks the certificate for the host name)")
 	flag.Parse()
 	if *url == "" {
 		flag.Usage()
@@ -42,6 +46,18 @@ func main() {
 	}
 	base := strings.TrimRight(*url, "/")
 	hc := &http.Client{Timeout: 15 * time.Second}
+	if *connect != "" {
+		tr := http.DefaultTransport.(*http.Transport).Clone()
+		dialer := &net.Dialer{Timeout: 10 * time.Second}
+		tr.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+			_, port, err := net.SplitHostPort(addr)
+			if err != nil {
+				return nil, err
+			}
+			return dialer.DialContext(ctx, network, net.JoinHostPort(*connect, port))
+		}
+		hc.Transport = tr
+	}
 	_, key, _ := ed25519.GenerateKey(rand.Reader)
 	st := &client.Station{Base: base, Key: key, HTTP: hc}
 

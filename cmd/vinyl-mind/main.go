@@ -55,6 +55,7 @@ Models
   publish <version>           publish a model regardless of reports
   withdraw <version> [-reason text]
 
+  access-log [-n 50]          the newest requests: time, client address, station key, request, status
   backup <dir>                write a consistent copy of the database and the server key into dir
   prune                       forget expired nonces and old access log entries
   version                     print the version
@@ -136,7 +137,7 @@ func versionArg(args []string) (int64, error) {
 func run(cfg config.Config, cmd string, args []string) error {
 	known := map[string]bool{"serve": true, "init": true, "fingerprint": true, "invite": true, "invitations": true,
 		"revoke-invitation": true, "stations": true, "approve": true, "revoke": true, "combine": true, "models": true,
-		"publish": true, "withdraw": true, "prune": true, "backup": true}
+		"publish": true, "withdraw": true, "prune": true, "backup": true, "access-log": true}
 	if !known[cmd] {
 		fmt.Fprint(os.Stderr, usage)
 		return fmt.Errorf("unknown command %q", cmd)
@@ -278,6 +279,19 @@ func run(cfg config.Config, cmd string, args []string) error {
 		return found(a.hub.Withdraw(v, *reason, now))
 	case "prune":
 		return a.store.Prune(now, cfg.AccessLogDays)
+	case "access-log":
+		f := flag.NewFlagSet("access-log", flag.ExitOnError)
+		n := f.Int("n", 50, "number of entries")
+		_ = f.Parse(args)
+		entries, err := a.store.AccessLog(*n)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintln(out, "TIME\tADDRESS\tKEY\tREQUEST\tSTATUS")
+		for _, e := range entries {
+			fmt.Fprintf(out, "%s\t%s\t%s\t%s %s\t%d\n", e.T.UTC().Format(time.DateTime), e.Address, e.KeyFP, e.Method,
+				e.Path, e.Status)
+		}
 	case "backup":
 		dir, err := arg(args, 0, "backup directory")
 		if err != nil {
