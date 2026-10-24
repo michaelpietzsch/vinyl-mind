@@ -156,7 +156,7 @@ jobs:
           args="--build-arg VERSION=$version"
           if [ "$HAS_DHI" != "true" ]; then
             echo "::warning::DHI_USERNAME/DHI_TOKEN not set: testing on public images, nothing is published"
-            args="$args --build-arg BUILD_IMAGE=golang:1.26-alpine"
+            args="$args --build-arg BUILD_IMAGE=golang:1.27-alpine"
             args="$args --build-arg RUNTIME_IMAGE=gcr.io/distroless/static-debian12:nonroot"
           fi
           echo "BUILD_ARGS=$args" >> "$GITHUB_ENV"

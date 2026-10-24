@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -38,8 +39,8 @@ func TestLoadOrCreate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	info, _ := os.Stat(path)
-	if info.Mode().Perm() != 0o600 {
+	// Windows has no Unix permission bits; there the file inherits the ACL of the data directory
+	if info, _ := os.Stat(path); runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Errorf("key file mode %v, want 0600", info.Mode().Perm())
 	}
 	k2, err := LoadOrCreate(path)

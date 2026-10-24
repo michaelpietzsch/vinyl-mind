@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -15,8 +16,13 @@ import (
 // that "PostgreSQL is only configuration" stays true.
 func eachDB(t *testing.T, fn func(t *testing.T, s *Store)) {
 	t.Run("sqlite", func(t *testing.T) {
-		// A space, an umlaut and a question mark in the path, as in a synced folder
-		dir := filepath.Join(t.TempDir(), "my data ü?")
+		// A space, an umlaut and (where the file system allows it) a question mark in the path, which the SQLite
+		// URI must escape
+		name := "my data ü?"
+		if runtime.GOOS == "windows" {
+			name = "my data ü"
+		}
+		dir := filepath.Join(t.TempDir(), name)
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			t.Fatal(err)
 		}

@@ -2,9 +2,9 @@
 
 # Hardened base images, free (Docker Hardened Images, Community): building needs a free Docker account and
 # `docker login dhi.io`. Without one, the same Dockerfile builds on public images:
-#   docker build --build-arg BUILD_IMAGE=golang:1.26-alpine \
+#   docker build --build-arg BUILD_IMAGE=golang:1.27-alpine \
 #                --build-arg RUNTIME_IMAGE=gcr.io/distroless/static-debian12:nonroot .
-ARG BUILD_IMAGE=dhi.io/golang:1.26-alpine3.23-dev
+ARG BUILD_IMAGE=dhi.io/golang:1.27-alpine3.23-dev
 ARG RUNTIME_IMAGE=dhi.io/static:20260909-alpine3.23
 
 # The build stage runs on the builder's own platform and cross-compiles, so images for other architectures need
