@@ -300,6 +300,20 @@ func Validate(document string, body []byte, out any) (*Version, error) {
 	return v, nil
 }
 
+// StrictJSON decodes a small document that has no schema of its own (such as a join request) with the same
+// strictness as the specified documents: size limit, UTF-8, no duplicate and no unknown keys.
+func StrictJSON(body []byte, out any) error {
+	if err := checkSyntax(body); err != nil {
+		return err
+	}
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(out); err != nil {
+		return fail("%v", err)
+	}
+	return nil
+}
+
 // ToShared converts a model standardised with its own mean and spread (as a station trains it) into the fixed
 // shared scaling. Exact: both give the same probability for every event (see README.md). b holds the intercept and
 // one weight per feature.

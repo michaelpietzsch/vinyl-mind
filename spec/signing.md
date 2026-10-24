@@ -13,6 +13,14 @@ and that a station only ever uses models from the server it accepted.
 | signature | the raw 64 bytes, base64url without padding |
 | fingerprint | `SHA256:` followed by the SHA-256 of the raw public key in standard base64 without padding (43 characters). Similar to SSH fingerprints, but over the raw key, so `ssh-keygen` shows a different value |
 
+Test vector, with the public key of test 1 in RFC 8032
+(`d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a` in hex):
+
+| | |
+|---|---|
+| public key, base64url | `11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo` |
+| fingerprint | `SHA256:If4x36FUomFia/hUBG/SJxt77UtqvkWqWId+9H+XIbk` |
+
 ## Station keys
 
 The station creates one Ed25519 key pair per server when it joins and keeps the private key to itself. Only the
