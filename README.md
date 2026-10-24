@@ -15,7 +15,7 @@ starting point of its own training, and only if it does well on the station's ow
 
 ## How it works
 
-- **Only knowledge travels, never audio.** A contribution is a few hundred bytes: per kind of event the weights of
+- **Only knowledge travels, never audio.** A contribution is less than a kilobyte: per kind of event the weights of
   a logistic regression, the number of examples and the result of the station's own cross-check. No recordings,
   no record titles, no names ([privacy](docs/privacy.md)).
 - **The station calls, never the hub.** Stations sit behind other people's routers and open every connection
@@ -49,6 +49,7 @@ is shown with the one you published.
 
 | | |
 |---|---|
+| [docs/overview.md](docs/overview.md) | the map: who talks to whom, from joining to using a model, the life of a model |
 | [spec/](spec/README.md) | the contract with the stations: features, JSON schemas, signatures, test vectors |
 | [docs/api.md](docs/api.md) | every endpoint with its answers and errors |
 | [docs/aggregation.md](docs/aggregation.md) | how contributions are weighted, combined, published and withdrawn, and what the simulation shows |
