@@ -176,7 +176,7 @@ A profile does not need a contribution of its own to report: a station may use g
 | 401 | `replayed` | the nonce was used before: create a new nonce per request |
 | 401 | `unknown_key` | the key has not joined (or the station left): join again |
 | 403 | `pending` | waiting for the operator's approval: try later |
-| 403 | `revoked` | the operator revoked the key: stop, tell the user |
+| 403 | `revoked` | the operator revoked the key: stop, tell the user. Leaving (`DELETE /v1/me`) is refused too: what the station sent is already deleted, and the key stays on record so that it cannot join again |
 | 400 | `bad_client` | the `Vinyl-Mind-Client` header is missing or not `name/version` |
 | 403 | `client_not_accepted` | this version is not accepted (any more): tell the user to update |
 | 429 | `rate_limited` | too many requests: wait as `Retry-After` says |

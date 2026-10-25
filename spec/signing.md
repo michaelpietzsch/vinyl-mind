@@ -78,7 +78,8 @@ base64url(protected header) . base64url(payload) . base64url(signature)
 - The payload is the global model as UTF-8 JSON, valid against `v1/global-model.schema.json`.
 - The signature covers `base64url(header) + "." + base64url(payload)`, as in every JWS.
 
-A station verifies before it evaluates anything: `alg` is `EdDSA`, `kid` is the fingerprint it accepted when
+A station verifies before it evaluates anything: `alg` is `EdDSA`, `typ` is `vinyl-mind-model+json`, `kid` is
+the fingerprint it accepted when
 joining, the signature verifies with the accepted server key, and the payload's `server` field equals `kid`. Only
 then does it parse and validate the payload. A model that fails any of these checks is discarded.
 

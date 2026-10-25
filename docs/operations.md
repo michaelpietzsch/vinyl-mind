@@ -39,7 +39,7 @@ Paths and secrets come from the environment:
 |---|---|
 | `VINYL_MIND_DATA_DIR` | database and server key (`/data` in the container) |
 | `VINYL_MIND_CONFIG` | path of the TOML file |
-| `VINYL_MIND_DATABASE_URL` | `postgres://…` to use PostgreSQL instead of SQLite; nothing else changes |
+| `VINYL_MIND_DATABASE_URL` | `postgres://…` to use PostgreSQL instead of SQLite; nothing else changes. `sqlite://<path>` takes the path literally, without query parameters |
 | `VINYL_MIND_ADMIN_TOKEN` | at least 32 characters; switches on the read-only overview at `/admin` |
 | `VINYL_MIND_LISTEN` | address to listen on, default `:8080` |
 

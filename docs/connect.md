@@ -140,6 +140,11 @@ The invitation is a secret: delivered once, never logged by the account service 
 URL. The station checks that `server_url` is its configured hub and `server_fingerprint` the key it accepted from
 `GET /v1/server`, and stops otherwise.
 
+`server_url` is the hub's canonical URL: `https`, the host in lower case, no port if it is 443, no path, no trailing
+slash, as in `https://api.vinylcheck.net`. The account service returns exactly this form. The station brings its
+configured URL into the same form (scheme and host in lower case, without `:443` and a trailing `/`) and compares
+the two strings; anything else, such as a path, is a mismatch.
+
 Errors, as in OAuth (`{"error": "…", "error_description": "…"}`):
 
 | Status | `error` | Meaning, and what the station does |

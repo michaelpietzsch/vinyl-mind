@@ -3,6 +3,17 @@
 Versions of the server. The specification has its own versions (feature versions in `spec/`); a server release
 names the feature versions it accepts.
 
+## Unreleased
+
+- Features that never vary: a contribution says per kind which features were `informative` (optional, one boolean
+  per feature). For the others the station sends the prior's weight; the hub combines each weight only from the
+  profiles that learned it, with the shares worked out again among them, and judges "far" only on those (schema 3).
+- Feature version 1 is stable: its scaling never changes, a changed scaling is a new feature version.
+  `gc_missing` is centred on 1, its most common value, so that a constant feature does not shift the intercept.
+- `cv_err_est` and `cv_err_raw` above the schema's maximum are sent as the maximum.
+- Documented: the `typ` check of a model, how `server_url` is compared, that a revoked station cannot leave.
+- `sqlite://<path>` takes the path literally (a `?` is part of the name); documented and tested with the permissions.
+
 ## 0.1.6 – 2026-10-25
 
 - `vinyl-mind backup -keep n <dir>` removes all but the newest n backups in dir afterwards; files it did not
