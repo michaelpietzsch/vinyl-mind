@@ -98,4 +98,4 @@ changes per version are in [CHANGELOG.md](CHANGELOG.md).
 Vinyl-Mind is free for personal and other non-commercial use under the
 [PolyForm Noncommercial License 1.0.0](LICENSE). Using it commercially, including running it as a service for a
 business, needs a commercial license from the author: please write to
-[pietzsch@michaelpietzsch.de](mailto:pietzsch@michaelpietzsch.de).
+[info@vinylcheck.net](mailto:info@vinylcheck.net).
