@@ -19,6 +19,7 @@ func main() {
 	flag.IntVar(&p.Recordings, "recordings", p.Recordings, "recordings with a master per honest profile")
 	flag.IntVar(&p.Events, "events", p.Events, "detections per recording")
 	flag.IntVar(&p.Attackers, "attackers", p.Attackers, "new stations sending a reversed model with inflated claims")
+	flag.Float64Var(&p.NoGC, "no-gc", p.NoGC, "share of the honest stations without a second opinion")
 	flag.Float64Var(&p.Heterogeneity, "heterogeneity", p.Heterogeneity, "spread of the profiles' true coefficients")
 	flag.Float64Var(&p.ChainShift, "chain-shift", p.ChainShift, "spread of the chains' feature offsets")
 	flag.Float64Var(&p.RecordShift, "record-shift", p.RecordShift, "spread of the records' feature offsets")
@@ -37,7 +38,8 @@ func main() {
 	fmt.Println("Distance of the combined coefficients to the truth (mean absolute difference)")
 	fmt.Printf("  honest stations only                 %6.3f\n", r.DistHonest)
 	fmt.Printf("  with attackers, Vinyl-Mind           %6.3f\n", r.DistAttacked)
-	fmt.Printf("  with attackers, plain weighted mean  %6.3f\n\n", r.DistNaive)
+	fmt.Printf("  with attackers, plain weighted mean  %6.3f\n", r.DistNaive)
+	fmt.Printf("  honest, constant features averaged   %6.3f\n\n", r.DistUnmasked)
 	fmt.Printf("New profile with %d x %d judged detections: estimate error per recording on %d held-out ones\n",
 		p.NewRecordings, p.NewEvents, p.TestRecordings)
 	fmt.Printf("  raw count                            %5.1f %%\n", 100*r.ErrRaw)

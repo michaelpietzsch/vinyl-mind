@@ -10,3 +10,4 @@ Each file must be rejected by a server; the tests check that it is.
 | `contribution-feature-version.json` | feature version 2 sent against the schema of version 1 |
 | `contribution-unknown-kind.json` | a kind the feature version does not define (`crackle` is called `tick`) |
 | `contribution-coef-bound.json` | a coefficient outside the plausible bound of ±50 |
+| `contribution-informative-length.json` | `informative` with eleven entries: it has one per feature, the intercept has none |

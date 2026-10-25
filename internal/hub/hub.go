@@ -116,7 +116,7 @@ func (h *Hub) Combine(now time.Time, dryRun bool) ([]Outcome, error) {
 				if r.Coef != nil && cls == spec.ClassAll {
 					for _, u := range r.Used {
 						seen[u.StationID] = true
-						if far(u.Kind.Coef, r.Coef, r.Spread, h.cfg.Aggregation.ConsistencyK) {
+						if far(u.Kind, r.Coef, r.Spread, h.cfg.Aggregation.ConsistencyK) {
 							farByStation[u.StationID] = true
 						}
 					}

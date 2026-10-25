@@ -93,10 +93,15 @@ func (s *Store) PutContribution(stationID int64, profileID string, d *spec.Contr
 		}
 		for kind, k := range d.Kinds {
 			coef, _ := json.Marshal(k.Coef)
+			var informative any
+			if k.Informative != nil {
+				b, _ := json.Marshal(k.Informative)
+				informative = string(b)
+			}
 			if _, err := tx.Exec(s.q(`INSERT INTO contribution_kinds (contribution_id, kind, coef, n_real, n_false,
-				n_manual, n_master, master_recordings, cv_err_est, cv_err_raw, auc)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`), id, kind, string(coef), k.NReal, k.NFalse, k.NManual,
-				k.NMaster, k.MasterRecordings, k.CVErrEst, k.CVErrRaw, k.AUC); err != nil {
+				n_manual, n_master, master_recordings, cv_err_est, cv_err_raw, auc, informative)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`), id, kind, string(coef), k.NReal, k.NFalse, k.NManual,
+				k.NMaster, k.MasterRecordings, k.CVErrEst, k.CVErrRaw, k.AUC, informative); err != nil {
 				return err
 			}
 		}
@@ -162,7 +167,7 @@ func (s *Store) contributions(q rowsQuerier, where string, args ...any) ([]Contr
 		ids = append(ids, c.ID)
 	}
 	krows, err := q.Query(s.q(`SELECT contribution_id, kind, coef, n_real, n_false, n_manual, n_master,
-		master_recordings, cv_err_est, cv_err_raw, auc FROM contribution_kinds
+		master_recordings, cv_err_est, cv_err_raw, auc, informative FROM contribution_kinds
 		WHERE contribution_id IN (?`+strings.Repeat(", ?", len(ids)-1)+`)`), ids...)
 	if err != nil {
 		return nil, err
@@ -173,12 +178,18 @@ func (s *Store) contributions(q rowsQuerier, where string, args ...any) ([]Contr
 		var kind, coef string
 		var k spec.KindContribution
 		var auc sql.NullFloat64
+		var informative sql.NullString
 		if err := krows.Scan(&id, &kind, &coef, &k.NReal, &k.NFalse, &k.NManual, &k.NMaster, &k.MasterRecordings,
-			&k.CVErrEst, &k.CVErrRaw, &auc); err != nil {
+			&k.CVErrEst, &k.CVErrRaw, &auc, &informative); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal([]byte(coef), &k.Coef); err != nil {
 			return nil, err
+		}
+		if informative.Valid {
+			if err := json.Unmarshal([]byte(informative.String), &k.Informative); err != nil {
+				return nil, err
+			}
 		}
 		if auc.Valid {
 			k.AUC = &auc.Float64

@@ -34,6 +34,18 @@ coef[0]     = b[0] + sum(b[i + 1] / sd[i] * (center[i] - mu[i]) for i in range(1
 The order of the features is `learning.FEATURES` (feature version 1 is exactly today's ten features). A global
 model can be used directly with `_predict()` by passing `{"mu": center, "sd": scale, "b": coef}`.
 
+A feature that took one single value in all examples of the kind (on a station without a second opinion: `gc`
+always 0.5, `gc_missing` always 1) is **not informative**. `_fit()` cannot learn its weight, only trade it off
+against the intercept. Report the prior's weight instead and shift the intercept (`spec/README.md`, *Features that
+never vary*), and send `informative` with `false` at its place:
+
+```python
+z0 = (x0[i] - center[i]) / scale[i]          # x0[i]: the one value the feature took
+coef[0] += (coef[i + 1] - prior[i + 1]) * z0  # predictions stay the same
+coef[i + 1] = prior[i + 1]                    # the global model's weight, 0 without one
+informative[i] = False
+```
+
 ### 4. The chain class
 
 A profile needs two coarse facts the station does not store yet: `chain.source` (`usb_turntable` or
@@ -85,8 +97,9 @@ bytes anyway.
 - After a retraining, and only while no recording runs, send `PUT /v1/profiles/{id}` for each profile that has at
   least one kind with a fitted and cross-checked model (`usable` or not: the hub filters by the self-check). From
   the station's model per kind: `coef` (converted as above), `n_real`, `n_false`, `n_manual` (the `manual` count),
-  `n_master` (`n_real + n_false - n_manual`), `master_recordings`, `cv_err_est`, `cv_err_raw`, optionally `auc`
-  (`_auc()` exists but is not reported by `train()` yet).
+  `n_master` (`n_real + n_false - n_manual`), `master_recordings`, `cv_err_est`, `cv_err_raw` (above 10 and 100
+  sent as 10 and 100), `informative` when a feature did not vary, optionally `auc` (`_auc()` exists but is not
+  reported by `train()` yet).
 - When offline or on errors: keep the newest contribution per profile, retry with growing pauses, honour
   `Retry-After` on 429. An unchanged contribution costs nothing on the server.
 
@@ -95,7 +108,8 @@ bytes anyway.
 1. Poll `GET /v1/models?feature_version=1&detector_version=…&chain_class=…` a few times a day with `If-None-Match`;
    usually the answer is 304.
 2. For a new `published` or `candidate` entry: verify the JWS with the accepted server key **before** parsing the
-   payload (`alg` EdDSA, `kid` equal to the accepted fingerprint, payload `server` equal to `kid`), then validate it
+   payload (`alg` EdDSA, `typ` `vinyl-mind-model+json`, `kid` equal to the accepted fingerprint, payload `server`
+   equal to `kid`), then validate it
    against `spec/v1/global-model.schema.json` and check that feature and detector version are the station's own.
 3. **Check it** on the profile's own recordings with a master: estimate the real clicks per recording once with the
    local model and once with the global one, as the cross-check does, and report both errors per kind with
@@ -120,5 +134,5 @@ audio, no features of single detections, no record titles, notes, Discogs data, 
 
 - **Feature version 2**: the features relative to the measured turntable profile (vinyl-check stage 0). It gets its
   own directory in `spec/` with its own fixed scaling; stations send it once they compute it.
-- The fixed scaling of feature version 1 is provisional. Before real contributions are accepted it is replaced by
-  the means and spreads of real stations, which is a change of the specification and therefore coordinated.
+- The scaling of feature version 1 is fixed and never changes; the means and spreads of real stations go into
+  the scaling of feature version 2.

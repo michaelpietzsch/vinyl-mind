@@ -159,6 +159,15 @@ func TestContributionsReplaceAndCascade(t *testing.T) {
 		if changed, _ = s.PutContribution(a.ID, "profile-aaaaaaaaaaaa", c, 2, t0); !changed {
 			t.Fatal("changed coefficients must count as a change")
 		}
+		k = c.Kinds["click"]
+		k.Informative = make([]bool, 10)
+		c.Kinds["click"] = k
+		if changed, _ = s.PutContribution(a.ID, "profile-aaaaaaaaaaaa", c, 2, t0); !changed {
+			t.Fatal("a changed mask must count as a change")
+		}
+		if again, _ := s.StationContributions(a.ID); !again[0].same(c) {
+			t.Fatalf("the mask did not survive the round trip: %+v", again[0].Kinds["click"].Informative)
+		}
 		_, _ = s.PutContribution(a.ID, "profile-bbbbbbbbbbbb", c, 2, t0)
 		if _, err := s.PutContribution(a.ID, "profile-cccccccccccc", c, 2, t0); !errors.Is(err, ErrTooManyProfiles) {
 			t.Fatalf("third profile over a limit of two: %v", err)
@@ -418,7 +427,8 @@ func TestDatabaseReadableByOwnerOnly(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("no Unix permission bits")
 	}
-	path := filepath.Join(t.TempDir(), "vm.sqlite")
+	// What looks like a query is part of the file name: the chmod must reach the file SQLite opened
+	path := filepath.Join(t.TempDir(), "vm.sqlite?mode=rwc")
 	s, err := Open("sqlite://" + path)
 	if err != nil {
 		t.Fatal(err)
@@ -429,6 +439,9 @@ func TestDatabaseReadableByOwnerOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("the database is not where the URL says: %v", err)
+	}
 	for _, f := range []string{path, path + "-wal", path + "-shm"} {
 		if info, err := os.Stat(f); err == nil && info.Mode().Perm() != 0o600 {
 			t.Errorf("%s: mode %v, want 0600", filepath.Base(f), info.Mode().Perm())

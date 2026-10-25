@@ -20,16 +20,19 @@ A **feature version** fixes which features a model uses, how they are computed a
 are only comparable within one feature version, so the server never combines contributions of different feature
 versions, and it never combines different **detector versions** either (a changed detector changes what the
 features measure). Each feature version has its own directory with a complete set of schemas. Within a version,
-changes are additive and optional, so an older station stays valid.
+changes are additive and optional, so an older station stays valid. The scaling (`center`, `scale`) is not sent
+with a contribution, so it **never changes within a version**: a different scaling is a new feature version.
 
 | Feature version | Status | Features |
 |---|---|---|
-| 1 | provisional | the ten features of the station's model as computed today, not yet relative to the turntable profile |
+| 1 | stable | the ten features of the station's model as computed today, not yet relative to the turntable profile |
 | 2 | planned | the same features relative to the measured turntable profile (the profile as zero point) |
 
 Feature version 1 makes it possible to build and test the whole exchange now. Weights from very different signal
-chains are only partly comparable in it; that is what version 2 is for. Its fixed scaling is provisional and is
-replaced by statistics of real stations before a server accepts the first real contributions.
+chains are only partly comparable in it; that is what version 2 is for. Its scaling is a careful guess, not a
+measurement; it only has to be the same everywhere, because the conversion below is exact. Binary features are
+centred on their most common value (`gc_missing` on 1: most stations have no second opinion). Statistics of real
+stations go into the scaling of version 2.
 
 ## Kinds and coefficients
 
@@ -53,12 +56,31 @@ coef[0]     = b[0] + sum(b[i + 1] / sd[i] * (center[i] - mu[i]))
 Both forms give the same probability for every event. The shared form is what makes weights of different stations
 comparable, and it is the form in which a station uses a global model as the prior of its own training.
 
+### Features that never vary
+
+A feature that takes one single value `x0` in all examples of a kind (`gc` and `gc_missing` on a station without a
+second opinion) says nothing about its weight: in the fit it only trades off against the intercept. The station
+then does not report a learned weight but the prior's, shifts the intercept so that every prediction stays the
+same, and marks the feature as not informative:
+
+```
+z0             = (x0 - center[i]) / scale[i]
+coef[0]       += (coef[i + 1] - prior[i + 1]) * z0
+coef[i + 1]    = prior[i + 1]      # the weight of the global model the profile trained towards, 0 without one
+informative[i] = false
+```
+
+The hub combines each weight only from the profiles for which it was informative (`docs/aggregation.md`).
+Without `informative`, all features count as informative.
+
 ## What a contribution contains
 
 Per kind: the coefficients, the number of examples (real and false alarm, and split into manual judgements and
 master classifications), the number of recordings with a master the model was cross-checked on, and the result of
 that cross-check (mean absolute relative error of the estimated and of the raw count per recording, optionally the
-AUC). Per profile: the coarse chain class, the feature, detector and client versions.
+AUC), and which features were informative. Per profile: the coarse chain class, the feature, detector and client
+versions. Errors above the schema's maximum (10 for the estimate, 100 for the raw count, possible on a quiet master
+with a few real events) are sent as the maximum; the hub gives such a model no weight anyway.
 
 A kind is only sent when the station has fitted a model for it and cross-checked it. Besides the schema, a server
 checks that `n_manual + n_master` equals `n_real + n_false`, that all numbers are finite and that the body is at

@@ -42,12 +42,22 @@ type KindContribution struct {
 	CVErrEst         float64   `json:"cv_err_est"`
 	CVErrRaw         float64   `json:"cv_err_raw"`
 	AUC              *float64  `json:"auc,omitempty"`
+	Informative      []bool    `json:"informative,omitempty"` // per feature; nil: all
+}
+
+// Informs reports whether the contribution carries information on coefficient j: the intercept (0) always, a
+// weight unless the feature was constant in the profile's examples.
+func (k KindContribution) Informs(j int) bool {
+	return j == 0 || k.Informative == nil || k.Informative[j-1]
 }
 
 func (c *Contribution) check(v *Version) error {
 	for kind, k := range c.Kinds {
 		if k.NManual+k.NMaster != k.NReal+k.NFalse {
 			return fail("kinds/%s: n_manual + n_master must equal n_real + n_false", kind)
+		}
+		if k.Informative != nil && len(k.Informative) != len(v.Features) {
+			return fail("kinds/%s/informative: one entry per feature", kind)
 		}
 		for _, x := range k.Coef {
 			if math.Abs(x) > v.CoefBound {

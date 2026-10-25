@@ -23,7 +23,7 @@ import (
 
 // SchemaVersion is the version of the tables: the first schema below plus the migrations. A database written by a
 // newer server is refused.
-const SchemaVersion = 2
+const SchemaVersion = 3
 
 // migrations[i] takes the schema from version i+1 to i+2. Only additions, so an older backup can always be opened.
 var migrations = [][]string{
@@ -34,6 +34,9 @@ var migrations = [][]string{
 		// Counters for the operator: contributions that changed something, and when the last one came
 		"ALTER TABLE stations ADD COLUMN contributions_total INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE stations ADD COLUMN last_contribution_at BIGINT",
+	},
+	{ // 3: which features were informative in a contribution (JSON array of booleans, NULL: all)
+		"ALTER TABLE contribution_kinds ADD COLUMN informative TEXT",
 	},
 }
 
@@ -81,7 +84,8 @@ type Store struct {
 	pg bool
 }
 
-// Open connects to "sqlite://<path>" or "postgres://…" and creates the tables if needed.
+// Open connects to "sqlite://<path>" or "postgres://…" and creates the tables if needed. Everything after
+// "sqlite://" is the file's path, taken literally: a "?" is part of the name, there are no query parameters.
 func Open(url string) (*Store, error) {
 	s := &Store{}
 	var err error

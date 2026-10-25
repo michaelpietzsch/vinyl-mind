@@ -75,8 +75,8 @@ only full trust leaves the new group, and why trust grows by at most one step a 
 ### Trust
 
 - A station whose contribution lies **far from the combination** loses `trust_penalty` (0.15) at once, down to
-  `trust_min` (0.05). Far means: the median over its coefficients of the distance to the combined coefficient,
-  measured in spreads (with a floor of 0.1), is above `consistency_k` (3).
+  `trust_min` (0.05). Far means: the median over the coefficients it learned (see *informative* below) of the
+  distance to the combined coefficient, measured in spreads (with a floor of 0.1), is above `consistency_k` (3).
 - A station whose contributions are consistent, or whose check reports agree with the decision on a model, gains
   `trust_step` (0.1), **at most once per day**, up to 1. Sending often does not earn trust faster.
 - Trust is judged on the model over all chain classes only, so that one contribution is not counted twice.
@@ -91,6 +91,15 @@ Per coefficient, over the usable profiles with their final shares:
 
 With each coefficient comes its **spread**, the weighted interquartile range of the contributions. It travels
 with the model (stations can see how much the profiles agree) and is the yardstick for "far" above.
+
+A weight is combined only from the profiles that **learned it**. Where a feature never varied in a profile's
+examples (most stations have no second opinion, so `gc` and `gc_missing` are constant there), the station sends the
+prior's weight and marks the feature as not `informative` (`spec/README.md`). Averaging those in would drag the
+weight back towards the prior, or towards 0 at the start, however clearly the other stations see it. The shares are
+worked out again among the profiles that learned the weight, with the same caps per station and for new stations.
+If they are fewer than `min_profiles` or come from fewer than `min_stations` stations, the weight is combined from
+all profiles, which for the others is the prior again: it moves little until enough stations see it. The intercept
+is always learned.
 
 A model is a **candidate** when it is built. A new candidate is only built when the contributions of the group or
 the aggregation settings changed since the last model (the inputs hash); an older candidate of the same group is
@@ -134,23 +143,28 @@ pass the robust combination and then the checks of most stations.
 (ridge-penalised logistic regression, Newton's method, judgements by hand five times, cross-check by leaving out
 one recording with a master), each chain shifts the features differently, and each record has its own mix of
 music, crackle and loud passages. Eight honest stations with six recordings of 300 detections each contribute;
-two new stations send a reversed model claiming ten million examples and a perfect self-check. A new profile with
-only 2 × 40 judged detections is then measured on 20 recordings it has not seen. A second run has twenty attackers
+half of them have no second opinion, the others miss it for 5 % of the events. Two new stations send a reversed
+model claiming ten million examples and a perfect self-check. A new profile without a second opinion and with only
+2 × 40 judged detections is then measured on 20 recordings it has not seen. A second run has twenty attackers
 instead of two.
 
 Over 20 random seeds (median):
 
 | | |
 |---|---|
-| distance of the combination to the truth, honest stations only | 0.052 |
-| the same with the two attackers | 0.061 |
-| the same with twenty attackers, as automatic sign-up could make them | 0.074 |
+| distance of the combination to the truth, honest stations only | 0.060 |
+| the same, if weights a profile did not learn were averaged in | 0.112 |
+| the same with the two attackers | 0.070 |
+| the same with twenty attackers, as automatic sign-up could make them | 0.094 |
 | the same with a plain weighted mean (no caps, no trimming, no self-check filter) | 2.40 |
-| new profile, raw count | 190 % off |
+| new profile, raw count | 216 % off |
 | new profile, its own model only | 25 % off |
-| new profile, global model as it is | 11 % off |
-| new profile, own model with the global model as prior | 10 % off, better than its own model in 20 of 20 seeds |
-| new profile, own model with the plain mean as prior | 142 % off |
+| new profile, global model as it is | 12 % off |
+| new profile, own model with the global model as prior | 13 % off, better than its own model in 18 of 20 seeds |
+| new profile, own model with the plain mean as prior | 146 % off |
+
+In the two seeds where the prior did not help, the profile's own model happened to be good already (8 % and 12 %
+off); the station's check on its own recordings is there to catch exactly that.
 
 Two findings from the simulation shape the station side (`docs/station-side.md`):
 

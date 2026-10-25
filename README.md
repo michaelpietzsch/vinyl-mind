@@ -8,10 +8,9 @@ pool what they learn without pooling their data: each station sends the small mo
 Vinyl-Mind combines them robustly into a global model, signs it and gives it back. A station uses it as the
 starting point of its own training, and only if it does well on the station's own recordings.
 
-> **Status: 0.1, alpha.** Feature version 1 is provisional: the station's features are not yet relative to the
-> turntable profile, and its shared scaling is replaced by values from real stations before the first real
-> contributions. The server, the specification and the security model are complete for a first, small group of
-> invited stations.
+> **Status: 0.1, alpha.** Feature version 1 is a first step: the station's features are not yet relative to the
+> turntable profile (that is version 2). The server, the specification and the security model are complete for a
+> first, small group of invited stations.
 
 ## How it works
 

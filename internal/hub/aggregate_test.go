@@ -117,13 +117,57 @@ func TestFar(t *testing.T) {
 	for i := range spread {
 		spread[i] = 0.5
 	}
-	close, distant := make([]float64, 11), make([]float64, 11)
-	for i := range close {
-		close[i], distant[i] = 0.4, 2
-	}
-	distant[0] = 0
+	close, distant := kind(0.4, 0, 500, 0.05), kind(2, 0, 500, 0.05)
+	distant.Coef[0] = 0
 	if far(close, combined, spread, 3) || !far(distant, combined, spread, 3) {
 		t.Fatal("far must look at the typical coefficient, not a single one")
+	}
+	// Weights a profile did not learn are the prior's: being far there says nothing about the profile
+	lagging := kind(0.4, 0, 500, 0.05)
+	lagging.Informative = make([]bool, 10)
+	for j := 1; j <= 7; j++ {
+		lagging.Coef[j] = 2
+	}
+	lagging.Informative[8], lagging.Informative[9] = true, true
+	if far(lagging, combined, spread, 3) {
+		t.Fatal("far must ignore the weights a profile did not learn")
+	}
+}
+
+// Most stations have no second opinion: their gc weights are only the prior's and must not drag the weight that
+// the few stations with one learned. Below the minimum, the weight is combined from all and so stays near the prior.
+func TestUninformativeWeights(t *testing.T) {
+	cfg := config.Default().Aggregation
+	var in []Input
+	for i := int64(1); i <= 8; i++ {
+		k := kind(1, 50, 2000, 0.06)
+		if i > 3 {
+			k.Informative = []bool{true, true, true, false, false, true, true, true, true, true}
+			k.Coef[4], k.Coef[5] = 0, 0
+		} else {
+			k.Coef[4], k.Coef[5] = 2+0.05*float64(i), -1
+		}
+		in = append(in, Input{StationID: i, ProfileID: "p", Trust: 1, Kind: k})
+	}
+	r := Combine(in, cfg, 11)
+	if r.Coef[4] < 2 || r.Coef[4] > 2.2 || !near(r.Coef[5], -1) || r.Basis[4] != 3 || r.Basis[1] != 8 {
+		t.Fatalf("learned weights %v, basis %v", r.Coef, r.Basis)
+	}
+	// The weights every station learned are combined from all, as before
+	if !near(r.Coef[1], 1) {
+		t.Fatalf("other weights changed: %v", r.Coef)
+	}
+	// A mask of the wrong length (the schema refuses it) leaves the profile out instead of breaking the combiner
+	in[1].Kind.Informative = []bool{true}
+	if r = Combine(in, cfg, 11); len(r.Excluded) != 1 {
+		t.Fatalf("short mask: %+v", r.Excluded)
+	}
+	in[1].Kind.Informative = nil
+	in[0].Kind.Informative = []bool{true, true, true, false, false, true, true, true, true, true}
+	in[0].Kind.Coef[4], in[0].Kind.Coef[5] = 0, 0
+	r = Combine(in, cfg, 11)
+	if r.Basis[4] != 0 || math.Abs(r.Coef[4]) > 0.5 {
+		t.Fatalf("two stations are below the minimum of three profiles: %v, basis %v", r.Coef[4], r.Basis)
 	}
 }
 

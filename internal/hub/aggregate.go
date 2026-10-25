@@ -38,6 +38,7 @@ type Excluded struct {
 type Result struct {
 	Coef     []float64
 	Spread   []float64
+	Basis    []int // per coefficient, the stations it was combined from; 0: too few were informative (see Combine)
 	Profiles int
 	Stations int
 	Examples float64
@@ -52,7 +53,7 @@ func Combine(in []Input, cfg config.Aggregation, nCoef int) *Result {
 	for _, x := range in {
 		k := x.Kind
 		switch {
-		case len(k.Coef) != nCoef:
+		case len(k.Coef) != nCoef || (k.Informative != nil && len(k.Informative) != nCoef-1):
 			res.Excluded = append(res.Excluded, Excluded{x.StationID, x.ProfileID, "wrong number of coefficients"})
 			continue
 		case k.CVErrEst > cfg.MaxEstError:
@@ -73,20 +74,74 @@ func Combine(in []Input, cfg config.Aggregation, nCoef int) *Result {
 		}
 		res.Used = append(res.Used, u)
 	}
-	stations := map[int64]float64{} // station → sum of its profiles' weights
-	trust := map[int64]float64{}
 	for _, u := range res.Used {
-		stations[u.StationID] += u.Evidence * u.Quality
-		trust[u.StationID] = u.Trust
 		res.Examples += u.Evidence
 	}
-	res.Profiles, res.Stations = len(res.Used), len(stations)
-	if res.Profiles < cfg.MinProfiles || res.Stations < cfg.MinStations {
+	res.Profiles, res.Stations = len(res.Used), countStations(res.Used)
+	if !enough(res.Used, cfg) {
 		res.Reason = fmt.Sprintf("%d usable profiles from %d stations, need %d from %d", res.Profiles,
 			res.Stations, cfg.MinProfiles, cfg.MinStations)
 		return res
 	}
+	shares := weigh(res.Used, cfg)
+	for i := range res.Used {
+		res.Used[i].Share = shares[i]
+	}
 
+	// A weight is combined only from the profiles that learned it: where a feature never varied, the profile
+	// sent the prior's weight, and averaging that in would only drag the combination back. The shares are worked
+	// out again among those profiles, so that the caps hold there as well. If they are too few, the weight is
+	// combined from all, which for the others is the prior again: it moves little until enough stations see it.
+	res.Coef, res.Spread, res.Basis = make([]float64, nCoef), make([]float64, nCoef), make([]int, nCoef)
+	for j := 0; j < nCoef; j++ {
+		used, ws := res.Used, shares
+		var sub []Used
+		for _, u := range res.Used {
+			if u.Kind.Informs(j) {
+				sub = append(sub, u)
+			}
+		}
+		switch {
+		case len(sub) == len(res.Used):
+			res.Basis[j] = res.Stations
+		case enough(sub, cfg):
+			used, ws, res.Basis[j] = sub, weigh(sub, cfg), countStations(sub)
+		}
+		vals := make([]float64, len(used))
+		for i, u := range used {
+			vals[i] = u.Kind.Coef[j]
+		}
+		if cfg.Method == "median" {
+			res.Coef[j] = quantile(vals, ws, 0.5)
+		} else {
+			res.Coef[j] = trimmedMean(vals, ws, cfg.Trim)
+		}
+		res.Spread[j] = quantile(vals, ws, 0.75) - quantile(vals, ws, 0.25)
+	}
+	return res
+}
+
+func countStations(used []Used) int {
+	ids := map[int64]bool{}
+	for _, u := range used {
+		ids[u.StationID] = true
+	}
+	return len(ids)
+}
+
+func enough(used []Used, cfg config.Aggregation) bool {
+	return len(used) >= cfg.MinProfiles && countStations(used) >= cfg.MinStations
+}
+
+// weigh gives each input its share in the combination: the stations' weights capped by their trust and the
+// newcomers' limit, each station's share split among its profiles by their weight. The shares add up to 1.
+func weigh(used []Used, cfg config.Aggregation) []float64 {
+	stations := map[int64]float64{} // station → sum of its profiles' weights
+	trust := map[int64]float64{}
+	for _, u := range used {
+		stations[u.StationID] += u.Evidence * u.Quality
+		trust[u.StationID] = u.Trust
+	}
 	ids := make([]int64, 0, len(stations))
 	for id := range stations {
 		ids = append(ids, id)
@@ -101,25 +156,11 @@ func Combine(in []Input, cfg config.Aggregation, nCoef int) *Result {
 		share[ids[i]] = p
 	}
 	limitNewcomers(share, trust, cfg)
-	for i := range res.Used {
-		u := &res.Used[i]
-		u.Share = share[u.StationID] * u.Evidence * u.Quality / stations[u.StationID]
+	out := make([]float64, len(used))
+	for i, u := range used {
+		out[i] = share[u.StationID] * u.Evidence * u.Quality / stations[u.StationID]
 	}
-
-	res.Coef, res.Spread = make([]float64, nCoef), make([]float64, nCoef)
-	vals, ws := make([]float64, len(res.Used)), make([]float64, len(res.Used))
-	for j := 0; j < nCoef; j++ {
-		for i, u := range res.Used {
-			vals[i], ws[i] = u.Kind.Coef[j], u.Share
-		}
-		if cfg.Method == "median" {
-			res.Coef[j] = quantile(vals, ws, 0.5)
-		} else {
-			res.Coef[j] = trimmedMean(vals, ws, cfg.Trim)
-		}
-		res.Spread[j] = quantile(vals, ws, 0.75) - quantile(vals, ws, 0.25)
-	}
-	return res
+	return out
 }
 
 // waterfill turns the stations' weights S into shares that add up to 1 and stay below each station's cap: shares
@@ -240,15 +281,17 @@ func quantile(vals, ws []float64, q float64) float64 {
 	return ps[len(ps)-1].v
 }
 
-// far reports whether a contribution lies far from the combination: its median distance per coefficient, measured
-// in spreads, is above k. The floor on the spread keeps a few nearly identical profiles from calling everything
-// else far.
-func far(coef, combined, spread []float64, k float64) bool {
+// far reports whether a contribution lies far from the combination: its median distance per coefficient it
+// learned, measured in spreads, is above k. The floor on the spread keeps a few nearly identical profiles from
+// calling everything else far.
+func far(k spec.KindContribution, combined, spread []float64, limit float64) bool {
 	const minSpread = 0.1
-	d := make([]float64, len(coef))
-	for j := range coef {
-		d[j] = math.Abs(coef[j]-combined[j]) / math.Max(spread[j], minSpread)
+	var d []float64
+	for j := range k.Coef {
+		if k.Informs(j) {
+			d = append(d, math.Abs(k.Coef[j]-combined[j])/math.Max(spread[j], minSpread))
+		}
 	}
 	sort.Float64s(d)
-	return d[len(d)/2] > k
+	return d[len(d)/2] > limit
 }

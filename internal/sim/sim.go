@@ -28,6 +28,8 @@ type Params struct {
 	ChainShift     float64 // spread of each chain's feature offsets (what the shared scaling must absorb)
 	RecordShift    float64 // spread of each record's feature offsets: records differ, so does what is a click
 	Attackers      int     // new stations sending a model that points the other way, with inflated claims
+	NoGC           float64 // share of the honest stations without a second opinion: gc and gc_missing are constant
+	GCOutage       float64 // share of the events without a second opinion on the stations that have one
 	NewRecordings  int     // labelled recordings of the new profile that has little data of its own
 	NewEvents      int     // judged detections per recording of the new profile
 	TestRecordings int     // held-out recordings of the new profile to measure on
@@ -39,8 +41,9 @@ type Params struct {
 // Defaults are the parameters of `go run ./tools/simulate`.
 func Defaults() Params {
 	return Params{Seed: 1, Stations: 8, Recordings: 6, Events: 300, ManualShare: 0.1, Heterogeneity: 0.15,
-		ChainShift: 0.4, RecordShift: 0.8, Attackers: 2, NewRecordings: 2, NewEvents: 40, TestRecordings: 20,
-		PriorStrength: 100, L2: 1, ManualWeight: 5}
+		ChainShift: 0.4, RecordShift: 0.8, Attackers: 2, NoGC: 0.5, GCOutage: 0.05, NewRecordings: 2, NewEvents: 40,
+		TestRecordings: 20,
+		PriorStrength:  100, L2: 1, ManualWeight: 5}
 }
 
 // Truth is the common model behind all profiles, in the shared scaling: what a click looks like.
@@ -50,8 +53,9 @@ var Truth = []float64{-0.6, 1.4, 0.9, -0.3, 1.0, -0.4, -0.5, 0.3, -0.6, -0.3, 0.
 type Report struct {
 	Params Params
 
-	// Distance of the combined coefficients to the truth (mean absolute difference)
-	DistHonest, DistAttacked, DistNaive float64
+	// Distance of the combined coefficients to the truth (mean absolute difference); DistUnmasked combines the
+	// honest contributions as if every weight had been learned everywhere
+	DistHonest, DistAttacked, DistNaive, DistUnmasked float64
 
 	// Mean relative estimate error per recording on the new profile's held-out recordings
 	ErrRaw, ErrLocal, ErrPrior, ErrGlobal, ErrPriorNaive float64
@@ -69,11 +73,13 @@ type event struct {
 type profile struct {
 	truth  []float64 // true coefficients of this profile in the shared scaling
 	offset []float64 // chain offset per feature, in units of the shared scale
+	noGC   bool      // no second opinion: gc is always 0.5 and gc_missing always 1
 	rng    *rand.Rand
 }
 
-func newProfile(fv *spec.Version, p Params, rng *rand.Rand) *profile {
-	pr := &profile{truth: make([]float64, len(Truth)), offset: make([]float64, len(fv.Features)), rng: rng}
+func newProfile(fv *spec.Version, p Params, noGC bool, rng *rand.Rand) *profile {
+	pr := &profile{truth: make([]float64, len(Truth)), offset: make([]float64, len(fv.Features)), noGC: noGC,
+		rng: rng}
 	for i := range Truth {
 		pr.truth[i] = Truth[i] + rng.NormFloat64()*p.Heterogeneity
 	}
@@ -86,6 +92,12 @@ func newProfile(fv *spec.Version, p Params, rng *rand.Rand) *profile {
 }
 
 func binary(name string) bool { return name == "gc_missing" || name == "music" || name == "both_ch" }
+
+// Indexes of the second-opinion features in feature version 1.
+const (
+	gcIndex        = 3
+	gcMissingIndex = 4
+)
 
 // recording draws the detections of one recording. Features are drawn around the shared center, shifted by the
 // chain and by the record (each record has its own mix of music, crackle and loud passages); labels follow the
@@ -101,16 +113,25 @@ func (pr *profile) recording(fv *spec.Version, p Params, n int) []event {
 	for k := range evs {
 		x := make([]float64, len(center))
 		logit := pr.truth[0]
+		missing := pr.noGC || pr.rng.Float64() < p.GCOutage
 		for i, f := range fv.Features {
-			z := pr.rng.NormFloat64() + pr.offset[i] + shift[i]
-			if binary(f.Name) {
-				z = -1
-				if pr.rng.Float64() < share[i] {
-					z = 1
+			switch {
+			case i == gcMissingIndex:
+				x[i] = 0
+				if missing {
+					x[i] = 1
 				}
+			case i == gcIndex && missing:
+				x[i] = 0.5
+			case binary(f.Name):
+				x[i] = 0
+				if pr.rng.Float64() < share[i] {
+					x[i] = 1
+				}
+			default:
+				x[i] = center[i] + (pr.rng.NormFloat64()+pr.offset[i]+shift[i])*scale[i]
 			}
-			x[i] = center[i] + z*scale[i]
-			logit += pr.truth[i+1] * z
+			logit += pr.truth[i+1] * (x[i] - center[i]) / scale[i]
 		}
 		y := 0.0
 		if pr.rng.Float64() < sigmoid(logit) {
@@ -305,7 +326,7 @@ func contribution(fv *spec.Version, p Params, recs [][]event) spec.KindContribut
 		}
 	}
 	k := spec.KindContribution{Coef: spec.ToShared(fv, m.mu, m.sd, m.b), MasterRecordings: len(recs),
-		CVErrEst: errEst / float64(n), CVErrRaw: errRaw / float64(n)}
+		CVErrEst: errEst / float64(n), CVErrRaw: errRaw / float64(n), Informative: informative(all)}
 	for _, e := range all {
 		if e.y == 1 {
 			k.NReal++
@@ -319,6 +340,25 @@ func contribution(fv *spec.Version, p Params, recs [][]event) spec.KindContribut
 		}
 	}
 	return k
+}
+
+// informative is what the station reports: a feature is informative if it took more than one value. Without a
+// prior, the weight of a constant feature is already 0 (its standardised value is always 0), as the rule asks.
+func informative(evs []event) []bool {
+	out, all := make([]bool, len(evs[0].x)), true
+	for i := range out {
+		for _, e := range evs {
+			if e.x[i] != evs[0].x[i] {
+				out[i] = true
+				break
+			}
+		}
+		all = all && out[i]
+	}
+	if all {
+		return nil
+	}
+	return out
 }
 
 func distance(a, b []float64) float64 {
@@ -358,8 +398,9 @@ func Run(p Params) (*Report, error) {
 	cfg.ManualWeight = p.ManualWeight
 
 	var honest []hub.Input
+	noGC := int(math.Round(p.NoGC * float64(p.Stations)))
 	for s := 0; s < p.Stations; s++ {
-		pr := newProfile(fv, p, rng)
+		pr := newProfile(fv, p, s < noGC, rng)
 		recs := make([][]event, p.Recordings)
 		for i := range recs {
 			recs[i] = pr.recording(fv, p, p.Events)
@@ -378,17 +419,24 @@ func Run(p Params) (*Report, error) {
 				NManual: 5_000_000, NMaster: 5_000_000, MasterRecordings: 1000, CVErrEst: 0, CVErrRaw: 1}})
 	}
 
+	unmasked := make([]hub.Input, len(honest))
+	for i, x := range honest {
+		x.Kind.Informative = nil
+		unmasked[i] = x
+	}
 	rh := hub.Combine(honest, cfg, fv.NCoef())
 	ra := hub.Combine(attacked, cfg, fv.NCoef())
-	if rh.Coef == nil || ra.Coef == nil {
+	ru := hub.Combine(unmasked, cfg, fv.NCoef())
+	if rh.Coef == nil || ra.Coef == nil || ru.Coef == nil {
 		return nil, fmt.Errorf("no combination: %s %s", rh.Reason, ra.Reason)
 	}
 	naiveCoef := naive(attacked, p.ManualWeight)
 	rep := &Report{Params: p, DistHonest: distance(rh.Coef, Truth), DistAttacked: distance(ra.Coef, Truth),
-		DistNaive: distance(naiveCoef, Truth), Excluded: ra.Excluded, Used: ra.Used}
+		DistNaive: distance(naiveCoef, Truth), DistUnmasked: distance(ru.Coef, Truth), Excluded: ra.Excluded,
+		Used: ra.Used}
 
-	// The new profile: little data of its own, judged on many held-out recordings
-	pr := newProfile(fv, p, rng)
+	// The new profile: little data of its own, judged on many held-out recordings, and no second opinion, as most
+	pr := newProfile(fv, p, true, rng)
 	own := make([][]event, p.NewRecordings)
 	for i := range own {
 		own[i] = pr.recording(fv, p, p.NewEvents)
