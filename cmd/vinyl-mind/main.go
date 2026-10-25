@@ -415,8 +415,7 @@ func run(cfg config.Config, cmd string, args []string) error {
 	case "backup":
 		f := flag.NewFlagSet("backup", flag.ExitOnError)
 		keep := f.Int("keep", 0, "afterwards keep only the newest n backups in dir (0: all)")
-		parse(f, args)
-		dir, err := arg(f.Args(), 0, "backup directory")
+		dir, err := arg(parse(f, args), 0, "backup directory")
 		if err != nil {
 			return err
 		}

@@ -113,3 +113,23 @@ func TestBackupKeep(t *testing.T) {
 		t.Errorf("left %v\nwant %v", names, want)
 	}
 }
+
+// The flag may stand before or after the directory, as with the other commands.
+func TestBackupCommand(t *testing.T) {
+	cfg := config.Default()
+	cfg.DataDir = t.TempDir()
+	cfg.DatabaseURL = "sqlite://" + filepath.Join(cfg.DataDir, "vm.sqlite")
+	for _, order := range []string{"flag first", "flag last"} {
+		dir := filepath.Join(t.TempDir(), "backup")
+		args := []string{"-keep", "1", dir}
+		if order == "flag last" {
+			args = []string{dir, "-keep", "1"}
+		}
+		if err := run(cfg, "backup", args); err != nil {
+			t.Fatalf("%s: %v", order, err)
+		}
+		if entries, _ := os.ReadDir(dir); len(entries) != 2 {
+			t.Errorf("%s: %d files, want 2", order, len(entries))
+		}
+	}
+}
