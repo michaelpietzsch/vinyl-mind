@@ -545,6 +545,15 @@ func (a *app) serve() error {
 	go func() { errc <- hs.ListenAndServe() }()
 	a.log.Info("listening", "addr", a.cfg.Listen, "version", version, "database", a.store.Dialect(),
 		"server_key", srv.Fingerprint())
+	// What the configuration admits, so that a check after a change needs no access to the file
+	bindingKeys := make([]string, 0, len(a.cfg.BindingKeys()))
+	for fp := range a.cfg.BindingKeys() {
+		bindingKeys = append(bindingKeys, fp)
+	}
+	slices.Sort(bindingKeys)
+	a.log.Info("admission", "join_mode", a.cfg.JoinMode, "clients", a.cfg.Clients.Allowed,
+		"detector_versions", a.cfg.Clients.DetectorVersions, "connect_url", a.cfg.Accounts.ConnectURL,
+		"binding_keys", bindingKeys)
 	select {
 	case err := <-errc:
 		return err
