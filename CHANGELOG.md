@@ -5,9 +5,12 @@ names the feature versions it accepts.
 
 ## Unreleased
 
+## 0.1.3 – 2026-10-25
+
 - Clients name themselves with `Vinyl-Mind-Client: <name>/<version>`. `[clients]` in the configuration lists the
   accepted clients (`name/version` or `name/prefix*`) and detector versions; others get `403 client_not_accepted`
   except for status and leaving. `GET /v1/server` shows the lists. A contribution's `client` must match the header.
+- `tools/probe` checks that a client which is not on the server's list is refused.
 
 ## 0.1.2 – 2026-10-24
 
