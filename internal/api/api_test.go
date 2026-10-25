@@ -566,8 +566,13 @@ func TestJoinsPerDay(t *testing.T) {
 	e.active()
 	code := "invitation-code"
 	third := e.station()
+	before, _ := e.store.Invitations()
 	if r, _ := third.Join(&code); r.Status != 429 || errorCode(r) != "join_limit" {
 		t.Fatalf("third new station on one day: %d %s", r.Status, r.Body)
+	}
+	// A join turned away by the daily limit must not use up the code
+	if after, _ := e.store.Invitations(); after[0].Uses != before[0].Uses {
+		t.Fatalf("refused join used the code: %d → %d", before[0].Uses, after[0].Uses)
 	}
 	e.now = e.now.Add(25 * time.Hour)
 	if r, _ := third.Join(&code); r.Status != 201 {
