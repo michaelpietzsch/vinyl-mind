@@ -59,6 +59,7 @@ is shown with the one you published.
 | [docs/privacy.md](docs/privacy.md) | what is stored, for how long, and what never leaves a station |
 | [docs/operations.md](docs/operations.md) | running a server: container, configuration, reverse proxy, commands, backups |
 | [docs/station-side.md](docs/station-side.md) | what a station (vinyl-check) implements to take part |
+| [docs/connect.md](docs/connect.md) | connecting a station by signing in on a website: PKCE, device flow, signed binding |
 
 ## Development
 

@@ -63,15 +63,19 @@ minimal station in Go that uses all of them.
 
 A station shows the fingerprint when it first connects, so that the user can compare it with the one the
 operator publishes, and keeps the key.
-`clients` and `detector_versions` are what the server accepts; empty lists mean everything. It checks `public_key` against `fingerprint`. `time` lets it notice a wrong
+`clients` and `detector_versions` are what the server accepts; empty lists mean everything. `connect_url`, when
+present, is where a station connects by signing in (`docs/connect.md`). It checks `public_key` against `fingerprint`. `time` lets it notice a wrong
 clock before its signed requests are refused as stale. `join` is `approval` (a station without invitation waits
 for the operator) or `invitation` (a code is required).
 
 ### `POST /v1/join`
 
 ```json
-{"public_key": "<base64url, 32 bytes>", "invitation": "<code, optional>"}
+{"public_key": "<base64url, 32 bytes>", "invitation": "<code, optional>", "binding": "<JWS, optional>"}
 ```
+
+`binding` comes from an account service that handed out the invitation (`docs/connect.md`); it is required for
+invitations created with `-bound`.
 
 Signed with the new key itself; the key header must be the fingerprint of `public_key`. This proves that the
 station holds the private key.
@@ -83,6 +87,8 @@ station holds the private key.
 | 403 | `invitation_invalid` | unknown, used up, expired or revoked code |
 | 403 | `invitation_required` | the server only admits stations with a code |
 | 403 | `client_not_accepted` | the server does not accept this client or version: update the software |
+| 403 | `binding_required` | the invitation is valid only with a binding from the account service |
+| 403 | `binding_invalid` | the binding is not signed by a known key, expired, or names another station or invitation |
 | 403 | `revoked` | this key was revoked; a station must create a new key to join again |
 | 429 | `rate_limited` | too many joins from this address (`Retry-After`) |
 | 429 | `join_limit` | the server admits no more new stations today (`Retry-After`) |

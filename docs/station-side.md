@@ -57,6 +57,10 @@ As described in vinyl-check's `docs/architecture.md`:
 
 ## Joining
 
+With a hub that names a `connect_url`, the station connects by signing in, as `docs/connect.md` describes (PKCE in
+the browser on the same computer, device flow otherwise). The steps below are what happens underneath, and the way
+for hubs without accounts.
+
 1. `GET /v1/server`: check that `public_key` matches `fingerprint`, show the fingerprint, store the key. A different
    key later is refused unless the user accepts it explicitly. Compare `time` with the local clock and warn if they
    are more than a minute apart: signed requests are refused beyond 300 seconds.
