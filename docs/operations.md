@@ -108,13 +108,22 @@ Everything that changes the server is a command; over the network nothing can be
 | `vinyl-mind stations` | stations with status, trust, profiles and last contact |
 | `vinyl-mind approve <fingerprint>` | admit a waiting station (`join_mode = "approval"`) |
 | `vinyl-mind revoke <fingerprint>` | revoke a key and delete what the station sent |
+| `vinyl-mind trust <fingerprint> <0..1>` | set a station's trust, for example 1 for the stations you know, so that new stations cannot outweigh them from the start |
+| `vinyl-mind revoke-invitation-stations <id>` | revoke a code and every station that joined with it, for example when the account it was given to is closed |
 | `vinyl-mind combine [-dry-run]` | combine now instead of waiting for the background job |
 | `vinyl-mind models` | models with status and check reports |
 | `vinyl-mind publish <version>`, `withdraw <version> -reason "…"` | the operator's decisions, for example at the start, when too few stations report |
 | `vinyl-mind backup <dir>` | consistent copy of database and server key, while the server runs |
 | `vinyl-mind access-log [-n 50]` | the newest requests with client address: check `trusted_proxies`, look into abuse |
 
-In a container: `docker compose exec vinyl-mind vinyl-mind <command>`.
+In a container: `docker compose exec vinyl-mind vinyl-mind <command>`. With `-json`, `invite`, `invitations`,
+`stations` and `revoke-invitation-stations` write one JSON object per line to stdout and nothing else, for scripts
+such as an account service that hands out invitations; errors go to stderr with a non-zero exit code.
+
+If invitations are handed out automatically (sign-up on a website), new stations are cheap. The server limits them
+to `joins_per_day` (20) in total, counts all new stations together as at most `newcomer_share` of a model
+([aggregation.md](aggregation.md)), and lets only stations older than `min_vote_age_days` vote. Mark the stations
+you know as trusted before that.
 
 ## The server key and backups
 

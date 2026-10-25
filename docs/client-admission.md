@@ -23,13 +23,17 @@ every station checking a model on its own recordings before using it ([security.
 
 | | Measure | Effect | Status |
 |---|---|---|---|
-| 1 | Invitations only for people who use the official builds; one code per station; revoke on misuse | the strongest barrier: admission by a person, not by software | process of the operator |
+| 1 | Invitations only for people who use the official builds; one code per station; revoke on misuse | the strongest barrier: admission by a person, not by software | by the operator; planned: accounts on the vinyl-check website that hand out one code each after e-mail confirmation, revoked together with the account (`revoke-invitation-stations`) |
 | 2 | Accept only known client and detector versions (`[clients]` in the configuration) | keeps out versions the hub cannot combine, and versions that must no longer contribute | **implemented** |
 | 3 | A release key built into each official release, signing the join request; the server accepts known release keys only | keeps out casual scripts and self-built clients; does not stop someone who extracts the key | open decision |
 | 4 | Signed downloads: code signing on Windows and macOS, signed packages for the Raspberry Pi, published checksums | protects users from tampered downloads (not the server) | part of vinyl-check's release process |
 
 Measure 2 works with the header `Vinyl-Mind-Client: <name>/<version>` on every request (`docs/api.md`). A version
 that is no longer accepted can still ask for its status and leave, so the station can tell its user to update.
+
+Automatic sign-up makes invitations cheap. The hub therefore limits new stations per day, counts all new
+stations together as at most a fifth of a model, and lets them vote only after a week, weighted by trust
+([aggregation.md](aggregation.md)).
 
 Measure 3 would also exclude versions that hobbyists build from the source, which the license allows for private
 use; it needs a decision before it is built, and work in vinyl-check's release pipeline.

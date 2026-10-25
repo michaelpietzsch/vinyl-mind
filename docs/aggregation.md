@@ -33,13 +33,15 @@ stations, so that one station with several turntables cannot make a model on its
 Each usable profile gets
 
 ```
-evidence = manual_weight × judgements by hand + master classifications     (manual_weight = 5, as on the station)
-quality  = 1 − cv_err_est / max_est_error                                   (1 = perfect self-check, 0 = at the limit)
+evidence = min(max_evidence, manual_weight × judgements by hand + master classifications)
+                                          (manual_weight = 5 as on the station, max_evidence = 5000)
+quality  = 1 − cv_err_est / max_est_error (1 = perfect self-check, 0 = at the limit)
 weight   = evidence × quality
 ```
 
 The quality factor falls to zero at the limit, so there is no jump between a profile that just counts and one
-that is just left out.
+that is just left out. The counts are what a station claims, not what anyone can check, so beyond `max_evidence`
+more claims buy no more weight.
 
 ### Limited influence per station
 
@@ -54,9 +56,21 @@ Shares follow the weights; what a capped station would get beyond its cap goes t
 is at its cap and the shares follow the caps, that is, the trust. Within a station, its profiles share its part
 by weight.
 
-Tying the cap to trust is what keeps new stations from taking over: a new station starts at `trust_start` (0.25)
-and so has at most 6.25 % of the mean, however many examples it claims. A fixed cap alone would not be enough:
-two fake stations at 25 % each would hold half the mean, more than any trimming removes.
+Tying the cap to trust keeps a single new station small: it starts at `trust_start` (0.25) and so has at most
+6.25 % of the mean, however many examples it claims. A fixed cap alone would not be enough: two fake stations at
+25 % each would hold half the mean, more than any trimming removes.
+
+### All new stations together
+
+Capping each new station is not enough either when stations are cheap to make, for example with sign-up on a
+website. Twenty new stations at 6.25 % each would together outweigh everyone else. So **all stations below
+`newcomer_trust` (full trust, 1.0) together get at most `newcomer_share` (20 %)** of the mean; the relations within
+each group stay as they were. One-sided 20 % is exactly what the trimmed mean cuts off.
+
+While every station is new, at the very start, there is no established group to protect, and the group cap does
+nothing. The operator therefore marks the stations he knows as trusted (`vinyl-mind trust <fingerprint> 1`).
+Trust earned by consistency alone is cheap to fake (a station can send back the published model), which is why
+only full trust leaves the new group, and why trust grows by at most one step a day.
 
 ### Trust
 
@@ -96,13 +110,15 @@ per profile and model.
 
 **Each station has one vote**: the majority of its profiles' verdicts, and no vote on a tie. Counting profiles
 instead would let a station that invents profiles decide alone; profiles that only report also count against the
-station's profile limit (`max_profiles_per_station`).
+station's profile limit (`max_profiles_per_station`). **A vote weighs as much as the station's trust**, and only
+stations that joined at least `min_vote_age_days` (7) days ago vote: many new stations cannot decide about a model
+that established ones have checked.
 
 | Situation | Rule (with `auto = true`) |
 |---|---|
-| reports from at least `min_reports` (3) profiles of at least `min_report_stations` (2) stations, and more stations find a candidate not worse than worse | published |
-| the same number of reports, and more stations find a candidate or a published model worse than not worse | withdrawn |
-| as many stations for as against, or not enough reports yet | wait for the next report |
+| reports from at least `min_reports` (3) profiles of at least `min_report_stations` (2) voting stations, and the trust of the stations finding a candidate not worse outweighs the trust of those finding it worse | published |
+| the same number of reports, and the trust of the stations finding a candidate or a published model worse outweighs the others | withdrawn |
+| equal weight on both sides, or not enough reports yet | wait for the next report |
 
 The newest published model of a group is the one stations get; when it is withdrawn, the previous published one
 is current again. The operator can publish or withdraw by hand (`vinyl-mind publish`, `vinyl-mind withdraw`), which
@@ -119,7 +135,8 @@ pass the robust combination and then the checks of most stations.
 one recording with a master), each chain shifts the features differently, and each record has its own mix of
 music, crackle and loud passages. Eight honest stations with six recordings of 300 detections each contribute;
 two new stations send a reversed model claiming ten million examples and a perfect self-check. A new profile with
-only 2 × 40 judged detections is then measured on 20 recordings it has not seen.
+only 2 × 40 judged detections is then measured on 20 recordings it has not seen. A second run has twenty attackers
+instead of two.
 
 Over 20 random seeds (median):
 
@@ -127,6 +144,7 @@ Over 20 random seeds (median):
 |---|---|
 | distance of the combination to the truth, honest stations only | 0.052 |
 | the same with the two attackers | 0.061 |
+| the same with twenty attackers, as automatic sign-up could make them | 0.074 |
 | the same with a plain weighted mean (no caps, no trimming, no self-check filter) | 2.40 |
 | new profile, raw count | 190 % off |
 | new profile, its own model only | 25 % off |

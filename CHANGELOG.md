@@ -5,6 +5,13 @@ names the feature versions it accepts.
 
 ## Unreleased
 
+- Hardening against many cheap stations (for sign-up that hands out invitations automatically): claimed example
+  counts are capped (`max_evidence`); all stations below full trust together get at most `newcomer_share` (20 %) of a
+  model; check-report votes are weighted by trust and count only after `min_vote_age_days` (7); at most
+  `joins_per_day` (20) new stations a day. In the simulation, forty new attackers move the model as little as two.
+- `vinyl-mind trust <fingerprint> <0..1>` to mark known stations; `revoke-invitation-stations <id>` revokes a code
+  and every station that joined with it; `-json` (one object per line) for `invite`, `invitations`, `stations`.
+
 ## 0.1.3 – 2026-10-25
 
 - Clients name themselves with `Vinyl-Mind-Client: <name>/<version>`. `[clients]` in the configuration lists the

@@ -126,3 +126,41 @@ func TestFar(t *testing.T) {
 		t.Fatal("far must look at the typical coefficient, not a single one")
 	}
 }
+
+func TestManyNewStationsTogetherAreCapped(t *testing.T) {
+	cfg := config.Default().Aggregation
+	var in []Input
+	for i := int64(1); i <= 4; i++ {
+		in = append(in, Input{StationID: i, ProfileID: "honest", Trust: 1, Kind: kind(1+0.05*float64(i), 50, 2000, 0.06)})
+	}
+	// Twenty cheap new stations, each claiming far more examples than the cap allows
+	for i := int64(100); i < 120; i++ {
+		in = append(in, Input{StationID: i, ProfileID: "sybil", Trust: cfg.TrustStart,
+			Kind: kind(-5, 1_000_000, 1_000_000, 0)})
+	}
+	r := Combine(in, cfg, 11)
+	newShare := 0.0
+	for _, u := range r.Used {
+		if u.StationID >= 100 {
+			newShare += u.Share
+			if u.Evidence > cfg.MaxEvidence {
+				t.Fatalf("evidence above the cap: %g", u.Evidence)
+			}
+		}
+	}
+	if !near(newShare, cfg.NewcomerShare) {
+		t.Fatalf("new stations together got %g, want %g", newShare, cfg.NewcomerShare)
+	}
+	if r.Coef[3] < 1.0 || r.Coef[3] > 1.25 {
+		t.Fatalf("twenty new stations moved the combination to %g", r.Coef[3])
+	}
+}
+
+func TestOnlyNewStationsAreNotCappedAsAGroup(t *testing.T) {
+	cfg := config.Default().Aggregation
+	share := map[int64]float64{1: 0.5, 2: 0.5}
+	limitNewcomers(share, map[int64]float64{1: 0.25, 2: 0.25}, cfg)
+	if !near(share[1], 0.5) {
+		t.Fatal("without established stations the group cap has nobody to protect")
+	}
+}

@@ -29,9 +29,12 @@ type Aggregation struct {
 	MinClassProfiles int     `toml:"min_class_profiles"` // before a chain class gets a model of its own
 	TrustStart       float64 `toml:"trust_start"`
 	TrustMin         float64 `toml:"trust_min"`
-	TrustStep        float64 `toml:"trust_step"`    // gained per day with consistent contributions or reports
-	TrustPenalty     float64 `toml:"trust_penalty"` // lost per contribution far from the consensus
-	ConsistencyK     float64 `toml:"consistency_k"` // "far" = more than k spreads from the combined coefficient
+	TrustStep        float64 `toml:"trust_step"`     // gained per day with consistent contributions or reports
+	TrustPenalty     float64 `toml:"trust_penalty"`  // lost per contribution far from the consensus
+	ConsistencyK     float64 `toml:"consistency_k"`  // "far" = more than k spreads from the combined coefficient
+	MaxEvidence      float64 `toml:"max_evidence"`   // cap of the weighted examples one profile can claim
+	NewcomerTrust    float64 `toml:"newcomer_trust"` // stations below this trust count as new (default: full trust)
+	NewcomerShare    float64 `toml:"newcomer_share"` // all new stations together, at most this share of the mean
 }
 
 // Publication controls when candidates are published and models withdrawn.
@@ -41,6 +44,7 @@ type Publication struct {
 	MinReportStations int     `toml:"min_report_stations"` // distinct stations among them before publishing
 	Tolerance         float64 `toml:"tolerance"`           // how much worse than local still counts as not worse
 	CombineIntervalS  int     `toml:"combine_interval_s"`  // background combining; 0 = only by command
+	MinVoteAgeDays    int     `toml:"min_vote_age_days"`   // a station votes on models only after this many days
 }
 
 // Clients lists the client software and detector versions that may take part. This keeps out versions whose
@@ -87,6 +91,7 @@ type Config struct {
 	StationRequestsPerMin int      `toml:"station_requests_per_min"`
 	AddressRequestsPerMin int      `toml:"address_requests_per_min"`
 	JoinsPerHour          int      `toml:"joins_per_hour"` // per address, against many fake stations
+	JoinsPerDay           int      `toml:"joins_per_day"`  // new stations per day in total, whatever the source
 	AccessLogDays         int      `toml:"access_log_days"`
 	MaxProfilesPerStation int      `toml:"max_profiles_per_station"`
 	FeatureVersions       []int    `toml:"feature_versions"`
@@ -103,15 +108,16 @@ type Config struct {
 func Default() Config {
 	return Config{
 		DataDir: "data", Listen: ":8080", JoinMode: "approval", ClockSkewS: 300,
-		StationRequestsPerMin: 60, AddressRequestsPerMin: 120, JoinsPerHour: 10, AccessLogDays: 14,
+		StationRequestsPerMin: 60, AddressRequestsPerMin: 120, JoinsPerHour: 10, JoinsPerDay: 20, AccessLogDays: 14,
 		MaxProfilesPerStation: 16, FeatureVersions: []int{1},
 		Aggregation: Aggregation{
 			Method: "trimmed_mean", Trim: 0.2, ManualWeight: 5, MaxEstError: 0.30, MaxStationShare: 0.25,
 			MinProfiles: 3, MinStations: 2, MinClassProfiles: 5,
 			TrustStart: 0.25, TrustMin: 0.05, TrustStep: 0.1, TrustPenalty: 0.15, ConsistencyK: 3,
+			MaxEvidence: 5000, NewcomerTrust: 1, NewcomerShare: 0.2,
 		},
 		Publication: Publication{Auto: true, MinReports: 3, MinReportStations: 2, Tolerance: 0.01,
-			CombineIntervalS: 3600},
+			CombineIntervalS: 3600, MinVoteAgeDays: 7},
 	}
 }
 
@@ -176,6 +182,13 @@ func (c *Config) Check() error {
 	}
 	if a.MinProfiles < 1 || a.MinStations < 1 || a.MinClassProfiles < a.MinProfiles {
 		bad("aggregation: need min_profiles, min_stations >= 1 and min_class_profiles >= min_profiles")
+	}
+	if a.MaxEvidence <= 0 || a.NewcomerTrust <= 0 || a.NewcomerTrust > 1 || a.NewcomerShare <= 0 ||
+		a.NewcomerShare >= 1 {
+		bad("aggregation: need max_evidence > 0, 0 < newcomer_trust <= 1 and 0 < newcomer_share < 1")
+	}
+	if p.MinVoteAgeDays < 0 || c.JoinsPerDay < 1 {
+		bad("need publication.min_vote_age_days >= 0 and joins_per_day >= 1")
 	}
 	if p.MinReports < 1 || p.MinReportStations < 1 {
 		bad("publication: min_reports and min_report_stations must be at least 1")

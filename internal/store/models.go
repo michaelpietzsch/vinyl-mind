@@ -157,6 +157,8 @@ type Report struct {
 	StationID     int64
 	StationFP     string
 	StationStatus string
+	StationTrust  float64
+	StationJoined time.Time
 	ProfileID     string
 	ModelVersion  int64
 	Adopted       bool
@@ -197,7 +199,7 @@ func (s *Store) Reports(version, stationID int64) ([]Report, error) {
 		where += " AND r.station_id = ?"
 		args = append(args, stationID)
 	}
-	rows, err := s.db.Query(s.q(`SELECT r.station_id, st.key_fp, st.status, r.profile_id, r.model_version,
+	rows, err := s.db.Query(s.q(`SELECT r.station_id, st.key_fp, st.status, st.trust, st.joined_at, r.profile_id, r.model_version,
 		r.adopted, r.kinds, r.verdict, r.received_at FROM check_reports r JOIN stations st ON st.id = r.station_id
 		WHERE `+where+` ORDER BY r.received_at`), args...)
 	if err != nil {
@@ -208,15 +210,15 @@ func (s *Store) Reports(version, stationID int64) ([]Report, error) {
 	for rows.Next() {
 		var r Report
 		var kinds string
-		var received int64
-		if err := rows.Scan(&r.StationID, &r.StationFP, &r.StationStatus, &r.ProfileID, &r.ModelVersion, &r.Adopted,
-			&kinds, &r.Verdict, &received); err != nil {
+		var received, joined int64
+		if err := rows.Scan(&r.StationID, &r.StationFP, &r.StationStatus, &r.StationTrust, &joined, &r.ProfileID,
+			&r.ModelVersion, &r.Adopted, &kinds, &r.Verdict, &received); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal([]byte(kinds), &r.Kinds); err != nil {
 			return nil, err
 		}
-		r.ReceivedAt = time.UnixMilli(received)
+		r.ReceivedAt, r.StationJoined = time.UnixMilli(received), time.UnixMilli(joined)
 		out = append(out, r)
 	}
 	return out, rows.Err()

@@ -9,6 +9,8 @@ clock_skew_s = 300                # accepted difference between a request's time
 station_requests_per_min = 60
 address_requests_per_min = 120
 joins_per_hour = 10               # per client address
+joins_per_day = 20                # new stations per day in total, whatever the source (a second line behind
+                                  # any account service that hands out invitations)
 access_log_days = 14
 max_profiles_per_station = 16
 feature_versions = [1]
@@ -28,6 +30,11 @@ trust_min = 0.05
 trust_step = 0.1                  # gained at most once per day
 trust_penalty = 0.15              # lost per contribution far from the consensus
 consistency_k = 3.0
+max_evidence = 5000.0             # weighted examples one profile can claim at most: claims are not proof
+newcomer_trust = 1.0              # stations below this trust are new: by default all that have not earned (or
+                                  # been given, `vinyl-mind trust`) full trust
+newcomer_share = 0.2              # all new stations together get at most this share of the mean, which the
+                                  # trimming (trim) can then cut off entirely
 
 [publication]
 auto = true                       # publish and withdraw by the stations' check reports
@@ -35,6 +42,8 @@ min_reports = 3
 min_report_stations = 2
 tolerance = 0.01
 combine_interval_s = 3600         # 0: combine only with `vinyl-mind combine`
+min_vote_age_days = 7             # a station's check reports count only after this many days; votes are
+                                  # weighted by trust
 
 [clients]
 # Client software and detector versions that may join, contribute and report. Empty lists accept everything, which

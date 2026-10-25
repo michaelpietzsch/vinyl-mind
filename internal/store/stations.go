@@ -190,6 +190,13 @@ func (s *Store) Join(fp, publicKey string, code *string, allowPending bool, trus
 	return out, err
 }
 
+// JoinsSince counts the stations that joined since t.
+func (s *Store) JoinsSince(t time.Time) (int, error) {
+	var n int
+	err := s.db.QueryRow(s.q("SELECT COUNT(*) FROM stations WHERE joined_at >= ?"), ms(t)).Scan(&n)
+	return n, err
+}
+
 // SetStatus approves or revokes a station. Revoking also deletes its contributions and reports, as leaving does;
 // the row stays so that the key cannot join again.
 func (s *Store) SetStatus(fp, status string, now time.Time) (bool, error) {

@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -42,12 +43,19 @@ Server
   fingerprint                 print the fingerprint of the server key, to publish for stations
 
 Stations
-  invite [-uses n] [-days d]  create an invitation code (shown once)
-  invitations                 list invitation codes
+  invite [-uses n] [-days d] [-json]
+                              create an invitation code (shown once)
+  invitations [-json]         list invitation codes
   revoke-invitation <id>      make a code unusable
-  stations                    list stations
+  revoke-invitation-stations <id> [-json]
+                              revoke a code and every station that joined with it
+  stations [-json]            list stations
   approve <fingerprint>       admit a waiting station
   revoke <fingerprint>        revoke a station's key and delete what it sent
+  trust <fingerprint> <0..1>  set a station's trust, e.g. 1 for stations you know
+
+With -json, commands write one JSON object per line to stdout and nothing else; errors go to stderr with a
+non-zero exit code.
 
 Models
   combine [-dry-run]          combine changed contributions into new candidates now
@@ -136,7 +144,7 @@ func versionArg(args []string) (int64, error) {
 
 func run(cfg config.Config, cmd string, args []string) error {
 	known := map[string]bool{"serve": true, "init": true, "fingerprint": true, "invite": true, "invitations": true,
-		"revoke-invitation": true, "stations": true, "approve": true, "revoke": true, "combine": true, "models": true,
+		"revoke-invitation": true, "revoke-invitation-stations": true, "trust": true, "stations": true, "approve": true, "revoke": true, "combine": true, "models": true,
 		"publish": true, "withdraw": true, "prune": true, "backup": true, "access-log": true}
 	if !known[cmd] {
 		fmt.Fprint(os.Stderr, usage)
@@ -160,7 +168,8 @@ func run(cfg config.Config, cmd string, args []string) error {
 		f := flag.NewFlagSet("invite", flag.ExitOnError)
 		uses := f.Int("uses", 1, "how many stations may join with the code")
 		days := f.Int("days", 14, "days until the code expires (0: never)")
-		_ = f.Parse(args)
+		asJSON := f.Bool("json", false, "one JSON object on stdout")
+		parse(f, args)
 		b := make([]byte, 16)
 		if _, err := rand.Read(b); err != nil {
 			return err
@@ -175,15 +184,30 @@ func run(cfg config.Config, cmd string, args []string) error {
 		if err != nil {
 			return err
 		}
+		if *asJSON {
+			return jsonLine(map[string]any{"id": id, "code": code, "max_uses": *uses, "expires_at": unix(exp)})
+		}
 		fmt.Printf("invitation %d: %s\n(shown only now; valid for %d station(s)", id, code, *uses)
 		if exp != nil {
 			fmt.Printf(" until %s", exp.UTC().Format("2006-01-02 15:04 UTC"))
 		}
 		fmt.Println(")")
 	case "invitations":
+		f := flag.NewFlagSet("invitations", flag.ExitOnError)
+		asJSON := f.Bool("json", false, "one JSON object per line")
+		parse(f, args)
 		invs, err := a.store.Invitations()
 		if err != nil {
 			return err
+		}
+		if *asJSON {
+			for _, i := range invs {
+				if err := jsonLine(map[string]any{"id": i.ID, "uses": i.Uses, "max_uses": i.MaxUses,
+					"expires_at": unix(i.ExpiresAt), "revoked": i.Revoked, "created_at": i.CreatedAt.Unix()}); err != nil {
+					return err
+				}
+			}
+			return nil
 		}
 		fmt.Fprintln(out, "ID\tUSED\tEXPIRES\tREVOKED\tCREATED")
 		for _, i := range invs {
@@ -200,10 +224,57 @@ func run(cfg config.Config, cmd string, args []string) error {
 			return err
 		}
 		return found(a.store.RevokeInvitation(id))
+	case "revoke-invitation-stations":
+		f := flag.NewFlagSet("revoke-invitation-stations", flag.ExitOnError)
+		asJSON := f.Bool("json", false, "one JSON object per revoked station")
+		pos := parse(f, args)
+		s, err := arg(pos, 0, "invitation ID")
+		if err != nil {
+			return err
+		}
+		id, err := strconv.ParseInt(s, 10, 64)
+		if err != nil {
+			return err
+		}
+		return a.revokeInvitationStations(id, *asJSON, now)
+	case "trust":
+		fp, err := arg(args, 0, "station fingerprint")
+		if err != nil {
+			return err
+		}
+		v, err := arg(args, 1, "trust between 0 and 1")
+		if err != nil {
+			return err
+		}
+		t, err := strconv.ParseFloat(v, 64)
+		if err != nil || t < 0 || t > 1 {
+			return fmt.Errorf("trust must be a number between 0 and 1, not %q", v)
+		}
+		st, err := a.store.Station(fp)
+		if err != nil {
+			return err
+		}
+		if st == nil {
+			return errors.New("not found")
+		}
+		return a.store.SetTrust(st.ID, t, nil)
 	case "stations":
+		f := flag.NewFlagSet("stations", flag.ExitOnError)
+		asJSON := f.Bool("json", false, "one JSON object per line")
+		parse(f, args)
 		sts, err := a.store.Stations()
 		if err != nil {
 			return err
+		}
+		if *asJSON {
+			for _, s := range sts {
+				if err := jsonLine(map[string]any{"fingerprint": s.KeyFP, "status": s.Status, "trust": s.Trust,
+					"profiles": s.Profiles, "joined_at": s.JoinedAt.Unix(), "last_seen_at": unix(s.LastSeenAt),
+					"invitation_id": s.InvitationID}); err != nil {
+					return err
+				}
+			}
+			return nil
 		}
 		fmt.Fprintln(out, "FINGERPRINT\tSTATUS\tTRUST\tPROFILES\tJOINED\tLAST SEEN")
 		for _, s := range sts {
@@ -254,7 +325,7 @@ func run(cfg config.Config, cmd string, args []string) error {
 		}
 		fmt.Fprintln(out, "VERSION\tFEATURES\tDETECTOR\tCLASS\tSTATUS\tPROFILES\tSTATIONS\tNOT WORSE\tWORSE\tCREATED\tREASON")
 		for _, m := range ms {
-			t, err := a.hub.Tally(m.Version)
+			t, err := a.hub.Tally(m.Version, now)
 			if err != nil {
 				return err
 			}
@@ -327,6 +398,68 @@ func (a *app) backup(dir string, now time.Time) error {
 	fmt.Println(db)
 	fmt.Println(keyCopy)
 	return nil
+}
+
+// revokeInvitationStations takes back a code and every station that joined with it, for example when the account
+// a code was given to is closed. The code is revoked first, so that no station can join with it in between.
+func (a *app) revokeInvitationStations(id int64, asJSON bool, now time.Time) error {
+	if err := found(a.store.RevokeInvitation(id)); err != nil {
+		return err
+	}
+	sts, err := a.store.Stations()
+	if err != nil {
+		return err
+	}
+	n := 0
+	for _, s := range sts {
+		if s.InvitationID == nil || *s.InvitationID != id || s.Status == store.Revoked {
+			continue
+		}
+		if _, err := a.store.SetStatus(s.KeyFP, store.Revoked, now); err != nil {
+			return err
+		}
+		n++
+		if asJSON {
+			if err := jsonLine(map[string]any{"fingerprint": s.KeyFP, "invitation_id": id}); err != nil {
+				return err
+			}
+		}
+	}
+	if !asJSON {
+		fmt.Printf("invitation %d revoked, %d station(s) revoked\n", id, n)
+	}
+	return nil
+}
+
+// jsonLine writes one JSON object as one line, for scripts that read the output line by line.
+func jsonLine(v any) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Println(string(b))
+	return err
+}
+
+func unix(t *time.Time) *int64 {
+	if t == nil {
+		return nil
+	}
+	v := t.Unix()
+	return &v
+}
+
+// parse reads flags wherever they stand, before or after the positional arguments, and returns the positionals.
+func parse(f *flag.FlagSet, args []string) []string {
+	var pos []string
+	for {
+		_ = f.Parse(args)
+		args = f.Args()
+		if len(args) == 0 {
+			return pos
+		}
+		pos, args = append(pos, args[0]), args[1:]
+	}
 }
 
 func when(t *time.Time) string {

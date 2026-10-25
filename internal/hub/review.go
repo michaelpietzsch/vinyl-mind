@@ -23,11 +23,15 @@ func Verdict(r spec.CheckReport, tolerance float64) string {
 
 // Tally counts the reports of active stations on one model. Each station has one vote, the majority of its
 // profiles' verdicts (a tie is no vote), so that a station cannot outvote the others by reporting many profiles.
+// Only stations that joined at least MinVoteAgeDays ago vote, and a vote weighs as much as the station's trust:
+// many new stations cannot decide about a model that established ones have checked.
 type Tally struct {
-	Reports  int // reporting profiles
-	Stations int // reporting stations
-	Worse    int // stations that found the model worse
-	NotWorse int // stations that found it not worse
+	Reports        int     // reporting profiles of voting stations
+	Stations       int     // voting stations
+	Worse          int     // stations that found the model worse
+	NotWorse       int     // stations that found it not worse
+	WorseWeight    float64 // their trust, summed
+	NotWorseWeight float64
 }
 
 // Review applies the rules of docs/aggregation.md after a new check report. With reports from enough profiles and
@@ -41,20 +45,20 @@ func (h *Hub) Review(version int64, now time.Time) error {
 	if err != nil || m == nil || m.Status == store.Withdrawn {
 		return err
 	}
-	t, votes, err := h.tally(version)
+	t, votes, err := h.tally(version, now)
 	if err != nil || t.Reports < h.cfg.Publication.MinReports || t.Stations < h.cfg.Publication.MinReportStations {
 		return err
 	}
 	decided := ""
 	switch {
-	case t.Worse > t.NotWorse:
+	case t.WorseWeight > t.NotWorseWeight:
 		reason := fmt.Sprintf("worse for %d of %d reporting stations", t.Worse, t.Stations)
 		if _, err := h.store.SetModelStatus(version, store.Withdrawn, reason, now); err != nil {
 			return err
 		}
 		h.log.Info("model withdrawn", "version", version, "reason", reason)
 		decided = store.Worse
-	case m.Status == store.Candidate && t.NotWorse > t.Worse:
+	case m.Status == store.Candidate && t.NotWorseWeight > t.WorseWeight:
 		if _, err := h.store.SetModelStatus(version, store.Published, "", now); err != nil {
 			return err
 		}
@@ -81,17 +85,20 @@ func (h *Hub) Review(version int64, now time.Time) error {
 }
 
 // tally returns the counts and each station's vote.
-func (h *Hub) tally(version int64) (Tally, map[int64]string, error) {
+func (h *Hub) tally(version int64, now time.Time) (Tally, map[int64]string, error) {
 	all, err := h.store.Reports(version, 0)
 	if err != nil {
 		return Tally{}, nil, err
 	}
 	var t Tally
 	worse, notWorse := map[int64]int{}, map[int64]int{}
+	trust := map[int64]float64{}
+	minAge := time.Duration(h.cfg.Publication.MinVoteAgeDays) * 24 * time.Hour
 	for _, r := range all {
-		if r.StationStatus != store.Active {
+		if r.StationStatus != store.Active || now.Sub(r.StationJoined) < minAge {
 			continue
 		}
+		trust[r.StationID] = r.StationTrust
 		t.Reports++
 		if r.Verdict == store.Worse {
 			worse[r.StationID]++
@@ -112,17 +119,19 @@ func (h *Hub) tally(version int64) (Tally, map[int64]string, error) {
 		case worse[id] > notWorse[id]:
 			votes[id] = store.Worse
 			t.Worse++
+			t.WorseWeight += trust[id]
 		case notWorse[id] > worse[id]:
 			votes[id] = store.NotWorse
 			t.NotWorse++
+			t.NotWorseWeight += trust[id]
 		}
 	}
 	return t, votes, nil
 }
 
 // Tally reports the counts of one model's check reports (for the overview and the command line).
-func (h *Hub) Tally(version int64) (Tally, error) {
-	t, _, err := h.tally(version)
+func (h *Hub) Tally(version int64, now time.Time) (Tally, error) {
+	t, _, err := h.tally(version, now)
 	return t, err
 }
 

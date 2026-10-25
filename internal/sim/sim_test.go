@@ -55,3 +55,19 @@ func TestSharedScalingAbsorbsChainOffsets(t *testing.T) {
 		t.Errorf("distance to the truth %.3f with strong chain offsets", r.DistHonest)
 	}
 }
+
+func TestManyCheapStationsDoNotTakeOver(t *testing.T) {
+	// What automatic sign-up makes cheap: forty new stations, each claiming ten million examples
+	for _, seed := range []uint64{1, 2, 3} {
+		p := Defaults()
+		p.Seed, p.Attackers = seed, 40
+		r, err := Run(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r.DistAttacked > 1.5*r.DistHonest+0.05 {
+			t.Errorf("seed %d: forty new stations moved the combination from %.3f to %.3f", seed, r.DistHonest,
+				r.DistAttacked)
+		}
+	}
+}

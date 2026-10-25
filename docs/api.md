@@ -85,6 +85,7 @@ station holds the private key.
 | 403 | `client_not_accepted` | the server does not accept this client or version: update the software |
 | 403 | `revoked` | this key was revoked; a station must create a new key to join again |
 | 429 | `rate_limited` | too many joins from this address (`Retry-After`) |
+| 429 | `join_limit` | the server admits no more new stations today (`Retry-After`) |
 
 ### `GET /v1/me`
 

@@ -28,7 +28,8 @@ starting point of its own training, and only if it does well on the station's ow
 - **Anyone can run a hub.** Nothing depends on a particular server; a studio can run one for its own stations
   ([operations](docs/operations.md)).
 
-In a simulation with eight stations, two attackers claiming millions of examples do not move the combined model,
+In a simulation with eight stations, attackers claiming millions of examples do not move the combined model, two
+of them as little as forty,
 and a new turntable profile with only 80 judgements estimates the number of real clicks with about 10 % error
 instead of 25 % when it starts from the global model.
 

@@ -64,7 +64,8 @@ func Combine(in []Input, cfg config.Aggregation, nCoef int) *Result {
 			res.Excluded = append(res.Excluded, Excluded{x.StationID, x.ProfileID, "estimate not better than raw count"})
 			continue
 		}
-		u := Used{Input: x, Evidence: cfg.ManualWeight*float64(k.NManual) + float64(k.NMaster),
+		// Claimed examples are not proof: beyond MaxEvidence, more claims buy no more weight
+		u := Used{Input: x, Evidence: math.Min(cfg.MaxEvidence, cfg.ManualWeight*float64(k.NManual)+float64(k.NMaster)),
 			Quality: 1 - k.CVErrEst/cfg.MaxEstError}
 		if u.Evidence*u.Quality <= 0 {
 			res.Excluded = append(res.Excluded, Excluded{x.StationID, x.ProfileID, "no weight"})
@@ -99,6 +100,7 @@ func Combine(in []Input, cfg config.Aggregation, nCoef int) *Result {
 	for i, p := range waterfill(S, caps) {
 		share[ids[i]] = p
 	}
+	limitNewcomers(share, trust, cfg)
 	for i := range res.Used {
 		u := &res.Used[i]
 		u.Share = share[u.StationID] * u.Evidence * u.Quality / stations[u.StationID]
@@ -160,6 +162,32 @@ func waterfill(S, caps []float64) []float64 {
 		}
 		if !changed {
 			return p
+		}
+	}
+}
+
+// limitNewcomers caps the share of all new stations together. Each new station is capped on its own already, but
+// many cheap stations would together still outweigh the established ones; together they get at most
+// NewcomerShare, which the trimming can then cut off. The relations within each group stay as they were. While
+// every station is new (at the start), there is nobody to protect, and nothing changes; the operator can mark
+// known stations as trusted.
+func limitNewcomers(share, trust map[int64]float64, cfg config.Aggregation) {
+	g, any := 0.0, false
+	for id, p := range share {
+		if trust[id] < cfg.NewcomerTrust {
+			g += p
+		} else {
+			any = true
+		}
+	}
+	if !any || g <= cfg.NewcomerShare {
+		return
+	}
+	for id := range share {
+		if trust[id] < cfg.NewcomerTrust {
+			share[id] *= cfg.NewcomerShare / g
+		} else {
+			share[id] *= (1 - cfg.NewcomerShare) / (1 - g)
 		}
 	}
 }

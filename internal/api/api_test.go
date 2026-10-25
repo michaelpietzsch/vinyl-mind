@@ -40,6 +40,7 @@ func newEnv(t *testing.T, edit func(*config.Config)) *env {
 	cfg := config.Default()
 	// Requests in the tests come from one address at one frozen instant; the limits get their own test
 	cfg.AddressRequestsPerMin, cfg.JoinsPerHour, cfg.StationRequestsPerMin = 100_000, 100_000, 100_000
+	cfg.JoinsPerDay, cfg.Publication.MinVoteAgeDays = 100_000, 0
 	if edit != nil {
 		edit(&cfg)
 	}
@@ -557,4 +558,19 @@ func TestClientAllowlist(t *testing.T) {
 		t.Fatalf("missing client header: %s", r.Body)
 	}
 	do(t, s, "DELETE", "/v1/me", nil, 204)
+}
+
+func TestJoinsPerDay(t *testing.T) {
+	e := newEnv(t, func(c *config.Config) { c.JoinsPerDay = 2 })
+	e.active()
+	e.active()
+	code := "invitation-code"
+	third := e.station()
+	if r, _ := third.Join(&code); r.Status != 429 || errorCode(r) != "join_limit" {
+		t.Fatalf("third new station on one day: %d %s", r.Status, r.Body)
+	}
+	e.now = e.now.Add(25 * time.Hour)
+	if r, _ := third.Join(&code); r.Status != 201 {
+		t.Fatalf("next day: %d %s", r.Status, r.Body)
+	}
 }

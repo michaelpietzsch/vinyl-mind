@@ -84,7 +84,7 @@ func (s *Server) admin(w http.ResponseWriter, r *http.Request) {
 	}
 	rows := make([]modelRow, 0, len(models))
 	for _, m := range models {
-		t, err := s.hub.Tally(m.Version)
+		t, err := s.hub.Tally(m.Version, s.now())
 		if err != nil {
 			s.internal(w, err)
 			return

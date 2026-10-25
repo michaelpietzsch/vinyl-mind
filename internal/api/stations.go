@@ -66,6 +66,19 @@ func (s *Server) join(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, err)
 		return
 	}
+	if existing == nil {
+		// A ceiling for the whole server, whatever hands out the invitations: a flood of new stations waits
+		n, err := s.store.JoinsSince(now.Add(-24 * time.Hour))
+		if err != nil {
+			s.internal(w, err)
+			return
+		}
+		if n >= s.cfg.JoinsPerDay {
+			w.Header().Set("Retry-After", "3600")
+			writeError(w, http.StatusTooManyRequests, "join_limit", "the server admits no more new stations today")
+			return
+		}
+	}
 	st, err := s.store.Join(sig.KeyFP, req.PublicKey, req.Invitation, s.cfg.JoinMode == "approval",
 		s.cfg.Aggregation.TrustStart, now)
 	switch {

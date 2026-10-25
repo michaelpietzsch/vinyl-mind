@@ -20,7 +20,7 @@ are reported privately, see [SECURITY.md](../SECURITY.md).
 | someone on the network reads or changes traffic | TLS at the reverse proxy; on top, every request is signed by the station and every model by the server, so a changed request or model is refused even if TLS were broken |
 | a recorded request is sent again | timestamp within ±300 s and a nonce that is accepted only once per key; the server key's fingerprint is part of the signed message, so a request is worthless on another server |
 | the server's database is copied | it holds only public keys and hashes of invitation codes: nothing that lets anyone act as a station or join |
-| many fake stations | joining needs an invitation code (or the operator's approval); joins are rate-limited per address |
+| many fake stations | joining needs an invitation code (or the operator's approval); joins are rate-limited per address and per day for the whole server; all new stations together get at most 20 % of a model, which the trimmed mean cuts off; their votes count only after seven days and weigh by trust; claimed example counts are capped |
 | a station sends bad or deliberately wrong weights | self-check filter, robust combination (trimmed mean or median), each station's share capped at 25 % × trust, new stations start at trust 0.25; far-off contributions cost trust at once (`docs/aggregation.md`) |
 | a station tries to decide about a model alone | one vote per station on check reports, decisions need several stations, profiles that only report count against the profile limit |
 | a poisoned model gets published anyway | every station checks a model on its own recordings before it uses it, and reports; a model worse for most stations is withdrawn |
@@ -62,5 +62,8 @@ are reported privately, see [SECURITY.md](../SECURITY.md).
 - The server key cannot be rotated yet. Losing it means every station accepts a new key by hand.
 - Feature version 1 does not yet relate the features to the turntable profile, so weights of very different
   chains combine less well; that limits the benefit, not the safety.
-- Trust is a heuristic. Against a determined attacker who was invited and behaves well for a long time, the caps
-  and the stations' own checks are the defence, not trust alone.
+- Trust is a heuristic. Consistency is cheap to fake (a station can send back the published model), so trust only
+  grows by a step a day and only full trust leaves the group of new stations. Against a determined attacker who was
+  invited and behaves well for a long time, the caps and the stations' own checks are the defence, not trust alone.
+- At the very start every station is new, and the cap on new stations has nothing to protect until the operator
+  marks known stations as trusted.

@@ -36,6 +36,8 @@ func newFixture(t *testing.T) *fixture {
 	t.Cleanup(func() { st.Close() })
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	cfg := config.Default()
+	// Stations in these tests report the moment they join; the minimum age gets a test of its own
+	cfg.Publication.MinVoteAgeDays = 0
 	if _, err := st.AddInvitation("invitation", 1000, nil, t0); err != nil {
 		t.Fatal(err)
 	}
@@ -227,7 +229,7 @@ func TestOneStationOneVote(t *testing.T) {
 	}
 	report(f, "a", "p1", v, 0.1)
 	report(f, "b", "p1", v, 0.1)
-	tally, _ := f.hub.Tally(v)
+	tally, _ := f.hub.Tally(v, t0)
 	if status(f, v) != store.Published || tally.Reports != 12 || tally.Worse != 1 || tally.NotWorse != 2 {
 		t.Fatalf("ten reports of one station must count once: %s %+v", status(f, v), tally)
 	}
@@ -267,5 +269,43 @@ func TestDryRunChangesNothing(t *testing.T) {
 	b, _ := json.Marshal(out[0].Kinds["click"].Coef)
 	if len(b) < 10 {
 		t.Fatal("a dry run still shows the combination")
+	}
+}
+
+func TestVotesNeedAgeAndWeighByTrust(t *testing.T) {
+	f := newFixture(t)
+	for _, s := range []string{"a", "b", "c"} {
+		f.contribute(s, "p1", "1", "usb_turntable.mm", 1)
+	}
+	v := outcome(f.combine(t0), "1", spec.ClassAll).Version
+	cfg := config.Default()
+	_, key, _ := ed25519.GenerateKey(rand.Reader)
+	h := New(cfg, f.st, key, nil)
+	put := func(station, profile string, global float64) {
+		r := spec.CheckReport{Kinds: map[string]spec.KindCheck{"click": {LocalErr: 0.1, GlobalErr: global,
+			MasterRecordings: 3}}}
+		if err := f.st.PutReport(store.Report{StationID: f.station(station), ProfileID: profile, ModelVersion: v,
+			Kinds: r.Kinds, Verdict: Verdict(r, cfg.Publication.Tolerance), ReceivedAt: t0}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// One fully trusted station finds the model fine, three new ones say it is worse
+	put("a", "p1", 0.09)
+	f.trust = cfg.Aggregation.TrustStart
+	for _, s := range []string{"x", "y", "z"} {
+		put(s, "p1", 0.4)
+	}
+	if err := h.Review(v, t0.Add(24*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if status(f, v) != store.Candidate {
+		t.Fatal("stations younger than min_vote_age_days must not decide")
+	}
+	if err := h.Review(v, t0.Add(8*24*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	tally, _ := h.Tally(v, t0.Add(8*24*time.Hour))
+	if status(f, v) != store.Published || tally.Worse != 3 || !near(tally.WorseWeight, 0.75) {
+		t.Fatalf("three new stations (0.75) must not outweigh a trusted one (1.0): %s %+v", status(f, v), tally)
 	}
 }
