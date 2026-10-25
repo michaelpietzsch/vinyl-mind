@@ -9,6 +9,8 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -41,6 +43,38 @@ type Publication struct {
 	CombineIntervalS  int     `toml:"combine_interval_s"`  // background combining; 0 = only by command
 }
 
+// Clients lists the client software and detector versions that may take part. This keeps out versions whose
+// features or formats the hub cannot combine; it is not proof of a genuine client, since any program can send any
+// name. Empty lists accept everything (development, tests).
+type Clients struct {
+	Allowed          []string `toml:"allowed"`           // "name/version", or "name/prefix*", e.g. "vinyl-check/1.2.*"
+	DetectorVersions []string `toml:"detector_versions"` // exact versions
+}
+
+var clientPattern = regexp.MustCompile(`^[a-z0-9-]{1,32}/[0-9A-Za-z][0-9A-Za-z.+_-]{0,31}\*?$`)
+
+// AcceptsClient reports whether a client "name/version" is allowed.
+func (c Clients) AcceptsClient(client string) bool {
+	if len(c.Allowed) == 0 {
+		return true
+	}
+	for _, a := range c.Allowed {
+		if prefix, ok := strings.CutSuffix(a, "*"); ok {
+			if strings.HasPrefix(client, prefix) {
+				return true
+			}
+		} else if client == a {
+			return true
+		}
+	}
+	return false
+}
+
+// AcceptsDetector reports whether a detector version is allowed.
+func (c Clients) AcceptsDetector(version string) bool {
+	return len(c.DetectorVersions) == 0 || slices.Contains(c.DetectorVersions, version)
+}
+
 // Config is the whole configuration.
 type Config struct {
 	DataDir               string   `toml:"-"`
@@ -59,6 +93,7 @@ type Config struct {
 
 	Aggregation Aggregation `toml:"aggregation"`
 	Publication Publication `toml:"publication"`
+	Clients     Clients     `toml:"clients"`
 
 	proxies []netip.Prefix
 }
@@ -146,6 +181,11 @@ func (c *Config) Check() error {
 	}
 	if c.AdminToken != "" && len(c.AdminToken) < 32 {
 		bad("VINYL_MIND_ADMIN_TOKEN must have at least 32 characters (for example: openssl rand -base64 32)")
+	}
+	for _, a := range c.Clients.Allowed {
+		if !clientPattern.MatchString(a) {
+			bad("clients.allowed: %q is not \"name/version\" or \"name/prefix*\"", a)
+		}
 	}
 	if c.ClockSkewS < 30 {
 		bad("clock_skew_s must be at least 30")

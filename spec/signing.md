@@ -37,6 +37,10 @@ Every request to `/v1/...` except `GET /v1/server` and `GET /healthz` carries fo
 | `Vinyl-Mind-Nonce` | at least 16 random bytes, base64url without padding (22 to 64 characters) |
 | `Vinyl-Mind-Signature` | Ed25519 signature of the message below |
 
+Next to them, `Vinyl-Mind-Client: <name>/<version>` names the client software. It is deliberately not part of the
+signature: it serves compatibility (which versions a server accepts), and signing it would prove nothing, since the
+station signs whatever it sends.
+
 The signed message is these eight lines, UTF-8, joined with a single line feed, without a line feed at the end:
 
 ```

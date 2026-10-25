@@ -65,6 +65,10 @@ As described in vinyl-check's `docs/architecture.md`:
 3. `POST /v1/join` with the public key and the code, signed with the new key (`spec/signing.md`). The answer is
    `active` or `pending`; poll `GET /v1/me` while pending.
 
+Every request carries `Vinyl-Mind-Client: vinyl-check/<version>`, and a contribution's `client` says the same.
+If the server answers `403 client_not_accepted`, the station stops contributing and tells the user to update; the
+list of accepted versions is in `GET /v1/server`. Status and leaving keep working.
+
 Every later request is signed as `spec/signing.md` describes, with a new nonce each time. The test vector there
 checks the encodings. Bodies are sent as bytes with `Content-Length` (in Python: `content=` or `data=` with
 `bytes`, never a generator or file stream), since chunked bodies are refused; the signature covers exactly those

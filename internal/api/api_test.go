@@ -66,7 +66,8 @@ func newEnv(t *testing.T, edit func(*config.Config)) *env {
 func (e *env) station() *client.Station {
 	e.t.Helper()
 	_, key, _ := ed25519.GenerateKey(rand.Reader)
-	s := &client.Station{Base: e.http.URL, Key: key, Now: func() time.Time { return e.now }}
+	// The client name matches the example contribution of the specification
+	s := &client.Station{Base: e.http.URL, Key: key, Now: func() time.Time { return e.now }, Client: "vinyl-check/1.1.0"}
 	if _, err := s.Connect(); err != nil {
 		e.t.Fatal(err)
 	}
@@ -204,6 +205,7 @@ func TestSignedRequestsAreChecked(t *testing.T) {
 	}
 	body, _ := json.Marshal(example(t, "contribution.json"))
 	h := auth.Sign(s.Key, e.srv.Fingerprint(), "PUT", "/v1/profiles/"+profileA, body, e.now)
+	h.Set(auth.HClient, "vinyl-check/1.1.0")
 	if resp := send(h, append(body[:len(body)-1:len(body)-1], ' ', '}')); resp.StatusCode != 401 {
 		t.Fatalf("changed body: %d", resp.StatusCode)
 	}
@@ -514,4 +516,45 @@ func TestBodiesNeedALength(t *testing.T) {
 	if resp.StatusCode != http.StatusRequestEntityTooLarge {
 		t.Fatalf("announced oversized body: %d, want 413", resp.StatusCode)
 	}
+}
+
+func TestClientAllowlist(t *testing.T) {
+	e := newEnv(t, func(c *config.Config) {
+		c.Clients = config.Clients{Allowed: []string{"vinyl-check/1.2.*"}, DetectorVersions: []string{"1"}}
+	})
+	info, _ := e.station().Connect()
+	if len(info.Clients) != 1 || info.Clients[0] != "vinyl-check/1.2.*" || info.DetectorVersions[0] != "1" {
+		t.Fatalf("server info must name the accepted clients: %+v", info)
+	}
+	code := "invitation-code"
+	old := e.station()
+	if r, _ := old.Join(&code); r.Status != 403 || errorCode(r) != "client_not_accepted" {
+		t.Fatalf("join with a version that is not accepted: %d %s", r.Status, r.Body)
+	}
+	s := e.station()
+	s.Client = "vinyl-check/1.2.0"
+	if r, _ := s.Join(&code); r.Status != 201 {
+		t.Fatalf("join with an accepted version: %d %s", r.Status, r.Body)
+	}
+	c := example(t, "contribution.json")
+	if r := do(t, s, "PUT", "/v1/profiles/"+profileA, c, 422); !strings.Contains(string(r.Body), "header") {
+		t.Fatalf("body naming another client than the header: %s", r.Body)
+	}
+	c["client"] = map[string]any{"name": "vinyl-check", "version": "1.2.0"}
+	do(t, s, "PUT", "/v1/profiles/"+profileA, c, 200)
+	c["detector_version"] = "2"
+	if r := do(t, s, "PUT", "/v1/profiles/"+profileA, c, 422); errorCode(r) != "detector_version_not_accepted" {
+		t.Fatalf("detector version that is not accepted: %s", r.Body)
+	}
+	// The same station after an update to a version the server no longer accepts: status and leave still work
+	s.Client = "vinyl-check/1.1.0"
+	if r := do(t, s, "GET", "/v1/models?feature_version=1&detector_version=1", nil, 403); errorCode(r) != "client_not_accepted" {
+		t.Fatalf("models for a version that is not accepted: %s", r.Body)
+	}
+	do(t, s, "GET", "/v1/me", nil, 200)
+	s.Client = ""
+	if r := do(t, s, "GET", "/v1/models?feature_version=1&detector_version=1", nil, 400); errorCode(r) != "bad_client" {
+		t.Fatalf("missing client header: %s", r.Body)
+	}
+	do(t, s, "DELETE", "/v1/me", nil, 204)
 }

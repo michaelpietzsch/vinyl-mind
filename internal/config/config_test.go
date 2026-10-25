@@ -25,7 +25,10 @@ func TestExampleMatchesDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := Default()
+	// An empty list in TOML and no list in Go mean the same
 	want.TrustedProxies, got.TrustedProxies = nil, nil
+	want.Clients, got.Clients = Clients{}, Clients{Allowed: nonEmpty(got.Clients.Allowed),
+		DetectorVersions: nonEmpty(got.Clients.DetectorVersions)}
 	got.proxies, want.proxies = nil, nil
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("config.example.toml differs from Default():\n got %+v\nwant %+v", got, want)
@@ -34,11 +37,12 @@ func TestExampleMatchesDefaults(t *testing.T) {
 
 func TestRefusesMistakes(t *testing.T) {
 	for content, want := range map[string]string{
-		"listn = \":8080\"\n":                   "unknown setting(s): listn",
-		"[aggregation]\nmethd = \"median\"\n":   "aggregation.methd",
-		"join_mode = \"open\"\n":                "join_mode",
-		"[aggregation]\ntrim = 0.5\n":           "trim",
-		"trusted_proxies = [\"proxy.local\"]\n": "trusted_proxies",
+		"listn = \":8080\"\n":                          "unknown setting(s): listn",
+		"[aggregation]\nmethd = \"median\"\n":          "aggregation.methd",
+		"join_mode = \"open\"\n":                       "join_mode",
+		"[aggregation]\ntrim = 0.5\n":                  "trim",
+		"trusted_proxies = [\"proxy.local\"]\n":        "trusted_proxies",
+		"[clients]\nallowed = [\"vinyl-check 1.2\"]\n": "clients.allowed",
 	} {
 		if _, err := Load(write(t, content)); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%q: want an error about %q, got %v", content, want, err)
@@ -82,4 +86,29 @@ func TestShortAdminTokenIsRefused(t *testing.T) {
 	if _, err := Load(write(t, "")); err == nil || !strings.Contains(err.Error(), "32 characters") {
 		t.Fatalf("a short admin token must be refused: %v", err)
 	}
+}
+
+func TestClients(t *testing.T) {
+	c := Clients{Allowed: []string{"vinyl-check/1.2.*", "vinyl-mind-probe/1"}, DetectorVersions: []string{"1"}}
+	for client, want := range map[string]bool{
+		"vinyl-check/1.2.0": true, "vinyl-check/1.2.10": true, "vinyl-check/1.3.0": false,
+		"vinyl-mind-probe/1": true, "vinyl-mind-probe/2": false, "other/1.2.0": false,
+	} {
+		if got := c.AcceptsClient(client); got != want {
+			t.Errorf("%s: %v", client, got)
+		}
+	}
+	if !c.AcceptsDetector("1") || c.AcceptsDetector("2") {
+		t.Error("detector versions are exact")
+	}
+	if open := (Clients{}); !open.AcceptsClient("anything/0") || !open.AcceptsDetector("x") {
+		t.Error("empty lists accept everything")
+	}
+}
+
+func nonEmpty(xs []string) []string {
+	if len(xs) == 0 {
+		return nil
+	}
+	return xs
 }

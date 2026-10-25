@@ -54,6 +54,7 @@ is shown with the one you published.
 | [docs/api.md](docs/api.md) | every endpoint with its answers and errors |
 | [docs/aggregation.md](docs/aggregation.md) | how contributions are weighted, combined, published and withdrawn, and what the simulation shows |
 | [docs/security.md](docs/security.md) | threats, measures, OWASP API Security Top 10, known limits |
+| [docs/client-admission.md](docs/client-admission.md) | which clients may take part, and what can and cannot prove a genuine client |
 | [docs/privacy.md](docs/privacy.md) | what is stored, for how long, and what never leaves a station |
 | [docs/operations.md](docs/operations.md) | running a server: container, configuration, reverse proxy, commands, backups |
 | [docs/station-side.md](docs/station-side.md) | what a station (vinyl-check) implements to take part |

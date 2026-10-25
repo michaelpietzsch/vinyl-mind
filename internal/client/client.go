@@ -22,15 +22,18 @@ type Station struct {
 	ServerKey ed25519.PublicKey // accepted at the first connection; models are verified against it
 	HTTP      *http.Client
 	Now       func() time.Time
+	Client    string // "name/version" for the Vinyl-Mind-Client header, e.g. "vinyl-check/1.2.0"
 }
 
 // ServerInfo is the answer of GET /v1/server.
 type ServerInfo struct {
-	PublicKey       string `json:"public_key"`
-	Fingerprint     string `json:"fingerprint"`
-	Join            string `json:"join"`
-	FeatureVersions []int  `json:"feature_versions"`
-	Time            int64  `json:"time"`
+	PublicKey        string   `json:"public_key"`
+	Fingerprint      string   `json:"fingerprint"`
+	Join             string   `json:"join"`
+	FeatureVersions  []int    `json:"feature_versions"`
+	Clients          []string `json:"clients"`
+	DetectorVersions []string `json:"detector_versions"`
+	Time             int64    `json:"time"`
 }
 
 func (s *Station) now() time.Time {
@@ -108,6 +111,9 @@ func (s *Station) Do(method, target string, body any, header http.Header) (*Resp
 	}
 	if raw != nil {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	if s.Client != "" {
+		req.Header.Set(auth.HClient, s.Client)
 	}
 	for k, vs := range auth.Sign(s.Key, keys.Fingerprint(s.ServerKey), method, target, raw, s.now()) {
 		req.Header[k] = vs

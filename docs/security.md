@@ -39,6 +39,7 @@ are reported privately, see [SECURITY.md](../SECURITY.md).
 | API5 Broken function level authorization | there are no administrative endpoints for stations; everything that changes the server is a command on the server. Waiting stations may only read their status and leave |
 | API6 Unrestricted access to sensitive business flows | joining needs an invitation; contributing and reporting are limited per station, and their influence on models is capped by trust and by one vote per station |
 | API7 Server side request forgery | the server never makes outgoing requests; it can run in a network without a route to the internet |
+| API6 (addition) | which client versions may take part is a configured list; it keeps incompatible versions out, but a header proves nothing, so admission rests on invitations and keys ([client-admission.md](client-admission.md)) |
 | API8 Security misconfiguration | no CORS, `nosniff`, `no-store`, no framing, no referrer, a CSP of `default-src 'none'`; errors carry a code and a short message, never internals; unknown configuration keys stop the server; the container runs as non-root on a read-only file system without capabilities |
 | API9 Improper inventory management | one versioned API (`/v1`), every endpoint documented in `docs/api.md`, no debug or metrics endpoints; unknown paths answer 404 |
 | API10 Unsafe consumption of APIs | the server consumes no other APIs |

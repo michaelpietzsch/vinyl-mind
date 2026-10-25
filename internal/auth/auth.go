@@ -22,6 +22,8 @@ const (
 	HTimestamp = "Vinyl-Mind-Timestamp"
 	HNonce     = "Vinyl-Mind-Nonce"
 	HSignature = "Vinyl-Mind-Signature"
+	// HClient names the client software as "name/version". It is not signed: it serves compatibility, not trust.
+	HClient = "Vinyl-Mind-Client"
 )
 
 var (

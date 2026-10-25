@@ -43,10 +43,15 @@ Paths and secrets come from the environment:
 | `VINYL_MIND_ADMIN_TOKEN` | at least 32 characters; switches on the read-only overview at `/admin` |
 | `VINYL_MIND_LISTEN` | address to listen on, default `:8080` |
 
-Two settings matter most:
+Three settings matter most:
 
 - `join_mode`: `invitation` admits only stations with a code from `vinyl-mind invite`; `approval` lets stations
   without a code wait until `vinyl-mind approve`. For a server on the internet, `invitation` is the safer choice.
+- `[clients]`: which client software and detector versions may take part, for example
+  `allowed = ["vinyl-check/1.2.*"]` and `detector_versions = ["1"]`. Add a version when it is released, remove one
+  that must not contribute any more; its stations can still see their status and leave. Empty lists accept everything.
+  This keeps out versions the hub cannot combine; it is not proof that a client is genuine
+  ([client-admission.md](client-admission.md)).
 - `trusted_proxies`: the address of your reverse proxy. Only from there is `X-Forwarded-For` believed; without it,
   rate limits and the access log see the proxy's address for every client.
 

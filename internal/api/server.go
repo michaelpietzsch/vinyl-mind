@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"regexp"
 	"strings"
 	"time"
 
@@ -235,8 +236,8 @@ func readBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
 
 type stationHandler func(w http.ResponseWriter, r *http.Request, st *store.Station, body []byte)
 
-// signed checks the request signature (spec/signing.md) before the handler runs. Pending stations may only ask
-// for their status and leave.
+// signed checks the request signature (spec/signing.md) before the handler runs. Pending stations, and clients
+// the server no longer accepts, may only ask for their status and leave.
 func (s *Server) signed(h stationHandler, allowPending bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, ok := readBody(w, r)
@@ -286,12 +287,34 @@ func (s *Server) signed(h stationHandler, allowPending bool) http.Handler {
 			writeError(w, http.StatusForbidden, "pending", "this station waits for approval by the operator")
 			return
 		}
+		// Status and leaving stay open to a client the server no longer accepts, so it can tell its user to update
+		if !allowPending && !s.clientAccepted(w, r) {
+			return
+		}
 		if err := s.store.Touch(st.ID, now); err != nil {
 			s.internal(w, err)
 			return
 		}
 		h(w, r, st, body)
 	})
+}
+
+var clientRE = regexp.MustCompile(`^[a-z0-9-]{1,32}/[0-9A-Za-z][0-9A-Za-z.+_-]{0,31}$`)
+
+// clientAccepted checks the client header against the configured list and answers 403 if it is missing or not
+// accepted.
+func (s *Server) clientAccepted(w http.ResponseWriter, r *http.Request) bool {
+	c := r.Header.Get(auth.HClient)
+	if !clientRE.MatchString(c) {
+		writeError(w, http.StatusBadRequest, "bad_client", "the Vinyl-Mind-Client header must be \"name/version\"")
+		return false
+	}
+	if !s.cfg.Clients.AcceptsClient(c) {
+		writeError(w, http.StatusForbidden, "client_not_accepted",
+			"this server does not accept "+c+"; please update the software")
+		return false
+	}
+	return true
 }
 
 func authError(w http.ResponseWriter, err error) {
@@ -332,8 +355,17 @@ func (s *Server) serverInfo(w http.ResponseWriter, _ *http.Request) {
 		"name": "vinyl-mind", "version": s.version,
 		"public_key": keys.Encode(s.key.Public().(ed25519.PublicKey)), "fingerprint": s.fp,
 		"join": s.cfg.JoinMode, "feature_versions": s.cfg.FeatureVersions,
+		// Empty lists: every client and detector version is accepted
+		"clients": orEmpty(s.cfg.Clients.Allowed), "detector_versions": orEmpty(s.cfg.Clients.DetectorVersions),
 		// Lets a station notice a wrong clock before its signed requests are refused as stale
 		"time":   s.now().Unix(),
 		"limits": map[string]int{"max_body": spec.MaxBody, "max_profiles": s.cfg.MaxProfilesPerStation},
 	})
+}
+
+func orEmpty(xs []string) []string {
+	if xs == nil {
+		return []string{}
+	}
+	return xs
 }

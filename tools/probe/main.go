@@ -59,14 +59,14 @@ func main() {
 		hc.Transport = tr
 	}
 	_, key, _ := ed25519.GenerateKey(rand.Reader)
-	st := &client.Station{Base: base, Key: key, HTTP: hc}
+	st := &client.Station{Base: base, Key: key, HTTP: hc, Client: "vinyl-mind-probe/1"}
 
 	info, err := st.Connect()
 	if err != nil {
 		fmt.Println("FAIL GET /v1/server:", err)
 		os.Exit(1)
 	}
-	check(true, "GET /v1/server: server key %s, joining by %s", info.Fingerprint, info.Join)
+	check(true, "GET /v1/server: server key %s, joining by %s, clients %v", info.Fingerprint, info.Join, info.Clients)
 	if *want != "" {
 		check(info.Fingerprint == *want, "fingerprint is the expected one")
 	}

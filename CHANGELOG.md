@@ -5,6 +5,10 @@ names the feature versions it accepts.
 
 ## Unreleased
 
+- Clients name themselves with `Vinyl-Mind-Client: <name>/<version>`. `[clients]` in the configuration lists the
+  accepted clients (`name/version` or `name/prefix*`) and detector versions; others get `403 client_not_accepted`
+  except for status and leaving. `GET /v1/server` shows the lists. A contribution's `client` must match the header.
+
 ## 0.1.2 – 2026-10-24
 
 - Request bodies must announce their length: `POST`, `PUT` and `PATCH` without `Content-Length` are refused with

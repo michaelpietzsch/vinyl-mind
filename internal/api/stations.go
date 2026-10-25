@@ -51,6 +51,9 @@ func (s *Server) join(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	info(r).keyFP = sig.KeyFP
+	if !s.clientAccepted(w, r) {
+		return
+	}
 	if fresh, err := s.store.UseNonce(sig.KeyFP, sig.Nonce, sig.Time.Add(s.cfg.ClockSkew()+time.Minute)); err != nil {
 		s.internal(w, err)
 		return

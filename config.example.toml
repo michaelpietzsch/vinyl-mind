@@ -35,3 +35,9 @@ min_reports = 3
 min_report_stations = 2
 tolerance = 0.01
 combine_interval_s = 3600         # 0: combine only with `vinyl-mind combine`
+
+[clients]
+# Client software and detector versions that may join, contribute and report. Empty lists accept everything, which
+# is meant for development. This keeps out versions the hub cannot combine; it does not prove a genuine client.
+allowed = []                      # e.g. ["vinyl-check/1.2.*", "vinyl-mind-probe/*"]
+detector_versions = []            # e.g. ["1"]

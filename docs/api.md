@@ -20,6 +20,11 @@ minimal station in Go that uses all of them.
 - **Times** are Unix seconds.
 - **Errors** are `{"error": "<code>", "message": "<text for people>"}` with a fitting HTTP status. Clients decide
   by the code, people read the message.
+- **The client names itself.** Every request carries `Vinyl-Mind-Client: <name>/<version>`, for example
+  `vinyl-check/1.2.0`. A server may accept only some clients and versions (`GET /v1/server` lists them); others get
+  `403 client_not_accepted` everywhere except `GET /v1/me` and `DELETE /v1/me`, so that a station can tell its user to
+  update. The header is not signed and proves nothing about the software: it keeps out versions the hub cannot
+  combine.
 - **Not for browsers.** There are no CORS headers, and every answer says `nosniff`, `no-store`, no framing and no
   referrer.
 - **Profile IDs** are chosen by the station at random: 16 to 64 characters of `A–Z a–z 0–9 _ -`, at least 128
@@ -50,13 +55,15 @@ minimal station in Go that uses all of them.
   "fingerprint": "SHA256:If4x36FUomFia/hUBG/SJxt77UtqvkWqWId+9H+XIbk",
   "join": "approval",
   "feature_versions": [1],
+  "clients": ["vinyl-check/1.2.*"], "detector_versions": ["1"],
   "time": 1793000000,
   "limits": {"max_body": 16384, "max_profiles": 16}
 }
 ```
 
 A station shows the fingerprint when it first connects, so that the user can compare it with the one the
-operator publishes, and keeps the key. It checks `public_key` against `fingerprint`. `time` lets it notice a wrong
+operator publishes, and keeps the key.
+`clients` and `detector_versions` are what the server accepts; empty lists mean everything. It checks `public_key` against `fingerprint`. `time` lets it notice a wrong
 clock before its signed requests are refused as stale. `join` is `approval` (a station without invitation waits
 for the operator) or `invitation` (a code is required).
 
@@ -75,6 +82,7 @@ station holds the private key.
 | 200 | same | this key had joined before (safe to retry) |
 | 403 | `invitation_invalid` | unknown, used up, expired or revoked code |
 | 403 | `invitation_required` | the server only admits stations with a code |
+| 403 | `client_not_accepted` | the server does not accept this client or version: update the software |
 | 403 | `revoked` | this key was revoked; a station must create a new key to join again |
 | 429 | `rate_limited` | too many joins from this address (`Retry-After`) |
 
@@ -104,6 +112,9 @@ Body: a contribution (`spec/v1/contribution.schema.json`). It replaces the profi
 | 413 | `too_large` | body over 16 KiB |
 | 422 | `invalid` | the document does not meet the specification; `message` names the place |
 | 422 | `feature_version_not_accepted` | the server does not combine this feature version |
+| 422 | `detector_version_not_accepted` | the server does not combine this detector version |
+
+The `client` of the contribution must be the same as the `Vinyl-Mind-Client` header.
 
 A station sends after retraining, only while no recording runs, and retries later when it is offline. An unchanged
 contribution costs nothing: the server does not build a new model for it.
@@ -159,4 +170,6 @@ A profile does not need a contribution of its own to report: a station may use g
 | 401 | `unknown_key` | the key has not joined (or the station left): join again |
 | 403 | `pending` | waiting for the operator's approval: try later |
 | 403 | `revoked` | the operator revoked the key: stop, tell the user |
+| 400 | `bad_client` | the `Vinyl-Mind-Client` header is missing or not `name/version` |
+| 403 | `client_not_accepted` | this version is not accepted (any more): tell the user to update |
 | 429 | `rate_limited` | too many requests: wait as `Retry-After` says |

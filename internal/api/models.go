@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strconv"
 
+	"github.com/michaelpietzsch/vinyl-mind/internal/auth"
 	"github.com/michaelpietzsch/vinyl-mind/internal/hub"
 	"github.com/michaelpietzsch/vinyl-mind/internal/store"
 	"github.com/michaelpietzsch/vinyl-mind/spec"
@@ -42,6 +43,15 @@ func (s *Server) putContribution(w http.ResponseWriter, r *http.Request, st *sto
 		if !specError(w, err) {
 			s.internal(w, err)
 		}
+		return
+	}
+	if c.Client.Name+"/"+c.Client.Version != r.Header.Get(auth.HClient) {
+		writeError(w, http.StatusUnprocessableEntity, "invalid", "client: does not match the Vinyl-Mind-Client header")
+		return
+	}
+	if !s.cfg.Clients.AcceptsDetector(c.DetectorVersion) {
+		writeError(w, http.StatusUnprocessableEntity, "detector_version_not_accepted",
+			"this server does not accept detector version "+c.DetectorVersion)
 		return
 	}
 	if !slices.Contains(s.cfg.FeatureVersions, v.Number) {
