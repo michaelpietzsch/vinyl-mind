@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"syscall"
 	"text/tabwriter"
@@ -69,7 +70,7 @@ Models
   access-log [-n 50]          the newest requests: time, client address, station key, request, status
   backup <dir>                write a consistent copy of the database and the server key into dir
   prune                       forget expired nonces and old access log entries
-  version                     print the version
+  version [-json]             print the version; -json also the schema this version writes and the database's
 
 Configuration: TOML file (-config, VINYL_MIND_CONFIG or <data>/config.toml) and the environment variables
 VINYL_MIND_DATA_DIR, VINYL_MIND_DATABASE_URL, VINYL_MIND_ADMIN_TOKEN, VINYL_MIND_LISTEN.
@@ -85,13 +86,24 @@ func main() {
 		os.Exit(2)
 	}
 	cmd, args := fs.Arg(0), fs.Args()[1:]
-	if cmd == "version" {
+	if cmd == "version" && !slices.Contains(args, "-json") {
 		fmt.Println(version)
 		return
 	}
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
 		fail(err)
+	}
+	if cmd == "version" {
+		// Reads the database's schema without opening it for the server, so the answer changes nothing
+		out := map[string]any{"version": version, "schema": store.SchemaVersion, "database_schema": nil}
+		if v, err := store.DatabaseSchema(cfg.DBURL()); err == nil {
+			out["database_schema"] = v
+		}
+		if err := jsonLine(out); err != nil {
+			fail(err)
+		}
+		return
 	}
 	if cmd == "healthcheck" {
 		os.Exit(healthcheck(cfg))

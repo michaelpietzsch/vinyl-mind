@@ -435,3 +435,21 @@ func TestDatabaseReadableByOwnerOnly(t *testing.T) {
 		}
 	}
 }
+
+func TestDatabaseSchemaReadsWithoutChanging(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "vm.sqlite")
+	if _, err := DatabaseSchema("sqlite://" + path); err == nil {
+		t.Fatal("a missing database is an error, not a new one")
+	}
+	if _, err := os.Stat(path); err == nil {
+		t.Fatal("asking for the schema must not create the database")
+	}
+	s, err := Open("sqlite://" + path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	if v, err := DatabaseSchema("sqlite://" + path); err != nil || v != SchemaVersion {
+		t.Fatalf("schema %d %v", v, err)
+	}
+}

@@ -5,6 +5,8 @@ names the feature versions it accepts.
 
 ## Unreleased
 
+- `vinyl-mind version -json` shows the version, the schema it writes and the database's schema, read without opening
+  the database for the server (nothing is created or migrated).
 - The SQLite database (with its -wal and -shm files) and the data directory are readable by the server's user only
   (0600, 0700), also when they already existed with wider permissions.
 

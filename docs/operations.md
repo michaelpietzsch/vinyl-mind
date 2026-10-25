@@ -119,6 +119,7 @@ Everything that changes the server is a command; over the network nothing can be
 | `vinyl-mind models` | models with status and check reports |
 | `vinyl-mind publish <version>`, `withdraw <version> -reason "…"` | the operator's decisions, for example at the start, when too few stations report |
 | `vinyl-mind backup <dir>` | consistent copy of database and server key, while the server runs |
+| `vinyl-mind version -json` | version, the schema it writes and the schema of the database, without changing anything |
 | `vinyl-mind access-log [-n 50]` | the newest requests with client address: check `trusted_proxies`, look into abuse |
 
 In a container: `docker compose exec vinyl-mind vinyl-mind <command>`. With `-json`, `invite`, `invitations`,

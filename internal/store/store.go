@@ -124,6 +124,35 @@ func Open(url string) (*Store, error) {
 	return s, nil
 }
 
+// DatabaseSchema reads the schema version of a database without opening it for the server: nothing is created,
+// migrated or changed, so it is safe to ask before or next to a running server.
+func DatabaseSchema(url string) (int, error) {
+	var db *sql.DB
+	var err error
+	switch {
+	case strings.HasPrefix(url, "sqlite://"):
+		path := strings.TrimPrefix(url, "sqlite://")
+		if _, err := os.Stat(path); err != nil {
+			return 0, err
+		}
+		esc := strings.NewReplacer("%", "%25", "?", "%3f", "#", "%23").Replace(path)
+		db, err = sql.Open("sqlite", "file:"+esc+"?mode=ro&_pragma=busy_timeout(5000)")
+	case strings.HasPrefix(url, "postgres://"), strings.HasPrefix(url, "postgresql://"):
+		db, err = sql.Open("pgx", url)
+	default:
+		return 0, fmt.Errorf("database URL must start with sqlite:// or postgres://")
+	}
+	if err != nil {
+		return 0, err
+	}
+	defer db.Close()
+	var v string
+	if err := db.QueryRow("SELECT value FROM meta WHERE key = 'schema_version'").Scan(&v); err != nil {
+		return 0, err
+	}
+	return strconv.Atoi(v)
+}
+
 // Close closes the database.
 func (s *Store) Close() error { return s.db.Close() }
 
