@@ -3,7 +3,7 @@
 Versions of the server. The specification has its own versions (feature versions in `spec/`); a server release
 names the feature versions it accepts.
 
-## Unreleased
+## 0.1.7 – 2026-10-25
 
 - Features that never vary: a contribution says per kind which features were `informative` (optional, one boolean
   per feature). For the others the station sends the prior's weight; the hub combines each weight only from the
