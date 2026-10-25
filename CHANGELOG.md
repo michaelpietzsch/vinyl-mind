@@ -5,6 +5,8 @@ names the feature versions it accepts.
 
 ## Unreleased
 
+- `vinyl-mind backup -keep n <dir>` removes all but the newest n backups in dir afterwards; files it did not
+  write stay.
 - The server logs at start what it admits: join mode, accepted clients and detector versions, `connect_url` and the
   fingerprints of the binding keys.
 - `vinyl-mind version -json` shows the version, the schema it writes and the database's schema, read without opening

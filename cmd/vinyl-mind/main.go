@@ -12,10 +12,12 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"syscall"
@@ -68,7 +70,8 @@ Models
   withdraw <version> [-reason text]
 
   access-log [-n 50]          the newest requests: time, client address, station key, request, status
-  backup <dir>                write a consistent copy of the database and the server key into dir
+  backup [-keep n] <dir>      write a consistent copy of the database and the server key into dir; -keep: then
+                              remove all but the newest n copies there
   prune                       forget expired nonces and old access log entries
   version [-json]             print the version; -json also the schema this version writes and the database's
 
@@ -410,39 +413,80 @@ func run(cfg config.Config, cmd string, args []string) error {
 				e.Path, e.Status)
 		}
 	case "backup":
-		dir, err := arg(args, 0, "backup directory")
+		f := flag.NewFlagSet("backup", flag.ExitOnError)
+		keep := f.Int("keep", 0, "afterwards keep only the newest n backups in dir (0: all)")
+		parse(f, args)
+		dir, err := arg(f.Args(), 0, "backup directory")
 		if err != nil {
 			return err
 		}
-		return a.backup(dir, now)
+		if *keep < 0 {
+			return errors.New("-keep must not be negative")
+		}
+		stamp, err := a.backup(dir, now)
+		if err != nil {
+			return err
+		}
+		return pruneBackups(dir, stamp, *keep)
 	}
 	return nil
 }
 
 // backup writes the database and the server key side by side, readable only by the owner: together they are
 // everything needed to restore the server, and the key must never be readable by anyone else.
-func (a *app) backup(dir string, now time.Time) error {
+func (a *app) backup(dir string, now time.Time) (stamp string, err error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
+		return "", err
 	}
-	stamp := now.UTC().Format("20060102-150405")
+	stamp = now.UTC().Format("20060102-150405")
 	db := filepath.Join(dir, "vinyl-mind-"+stamp+".sqlite")
 	if err := a.store.Backup(db); err != nil {
-		return err
+		return "", err
 	}
 	if err := os.Chmod(db, 0o600); err != nil {
-		return err
+		return "", err
 	}
 	key, err := os.ReadFile(a.cfg.ServerKeyPath())
 	if err != nil {
-		return err
+		return "", err
 	}
 	keyCopy := filepath.Join(dir, "vinyl-mind-"+stamp+"-server-key.pem")
 	if err := os.WriteFile(keyCopy, key, 0o600); err != nil {
-		return err
+		return "", err
 	}
 	fmt.Println(db)
 	fmt.Println(keyCopy)
+	return stamp, nil
+}
+
+var backupName = regexp.MustCompile(`^vinyl-mind-([0-9]{8}-[0-9]{6})(\.sqlite|-server-key\.pem)$`)
+
+// pruneBackups removes all but the newest keep backups in dir, never the one just written (stamp), even if the
+// clock went back. It touches only files named as backup names them, so copies an operator put there stay. Removed
+// files go to stderr: stdout lists only what was written, for scripts that pick the backup up.
+func pruneBackups(dir, stamp string, keep int) error {
+	if keep < 1 {
+		return nil
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	files := map[string][]string{}
+	for _, e := range entries {
+		if m := backupName.FindStringSubmatch(e.Name()); m != nil && e.Type().IsRegular() && m[1] != stamp {
+			files[m[1]] = append(files[m[1]], e.Name())
+		}
+	}
+	older := slices.Sorted(maps.Keys(files))
+	for _, s := range older[:max(0, len(older)-(keep-1))] {
+		for _, name := range files[s] {
+			if err := os.Remove(filepath.Join(dir, name)); err != nil {
+				return err
+			}
+			fmt.Fprintln(os.Stderr, "removed", filepath.Join(dir, name))
+		}
+	}
 	return nil
 }
 

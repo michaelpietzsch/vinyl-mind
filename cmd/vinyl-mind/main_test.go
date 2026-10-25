@@ -1,7 +1,9 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -61,5 +63,53 @@ func TestRevokeAccountCommand(t *testing.T) {
 	}
 	if err := run(cfg, "revoke-account", []string{"-json", "no-such-account-00"}); err != nil {
 		t.Fatalf("an account without stations is no error: %v", err)
+	}
+}
+
+// -keep removes the oldest backups, never the newest and never a file it did not write.
+func TestBackupKeep(t *testing.T) {
+	cfg := config.Default()
+	cfg.DataDir = t.TempDir()
+	cfg.DatabaseURL = "sqlite://" + filepath.Join(cfg.DataDir, "vm.sqlite")
+	a, err := open(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.store.Close()
+	dir := t.TempDir()
+	for _, other := range []string{"vor-rollback-20261025-120000.sqlite", "vinyl-mind.sqlite"} {
+		if err := os.WriteFile(filepath.Join(dir, other), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now := time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC)
+	for i := range 5 {
+		stamp, err := a.backup(dir, now.Add(time.Duration(i)*time.Hour))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := pruneBackups(dir, stamp, 3); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// a clock that went back: the backup just written stays, the oldest of the others goes
+	stamp, err := a.backup(dir, now.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pruneBackups(dir, stamp, 3); err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	want := []string{"vinyl-mind-20261025-110000-server-key.pem", "vinyl-mind-20261025-110000.sqlite",
+		"vinyl-mind-20261025-150000-server-key.pem", "vinyl-mind-20261025-150000.sqlite",
+		"vinyl-mind-20261025-160000-server-key.pem", "vinyl-mind-20261025-160000.sqlite",
+		"vinyl-mind.sqlite", "vor-rollback-20261025-120000.sqlite"}
+	if !slices.Equal(names, want) {
+		t.Errorf("left %v\nwant %v", names, want)
 	}
 }
