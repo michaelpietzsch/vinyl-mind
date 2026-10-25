@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/michaelpietzsch/vinyl-mind/internal/auth"
+	"github.com/michaelpietzsch/vinyl-mind/internal/binding"
 	"github.com/michaelpietzsch/vinyl-mind/internal/store"
 	"github.com/michaelpietzsch/vinyl-mind/spec"
 )
@@ -17,7 +18,11 @@ var invitationRE = regexp.MustCompile(`^[A-Za-z0-9_-]{8,64}$`)
 type joinRequest struct {
 	PublicKey  string  `json:"public_key"`
 	Invitation *string `json:"invitation,omitempty"`
+	Binding    *string `json:"binding,omitempty"` // from an account service, docs/connect.md
 }
+
+// errBindingInvalid stands for every failed check of a binding; the reason goes to the log, not to the client.
+var errBindingInvalid = errors.New("binding invalid")
 
 // join registers a station. The request is signed with the new key itself, which proves that the station holds the
 // private key to the public key it registers.
@@ -39,6 +44,10 @@ func (s *Server) join(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Invitation != nil && !invitationRE.MatchString(*req.Invitation) {
 		writeError(w, http.StatusForbidden, "invitation_invalid", "invitation code is not valid")
+		return
+	}
+	if req.Binding != nil && req.Invitation == nil {
+		writeError(w, http.StatusUnprocessableEntity, "invalid", "a binding belongs to an invitation")
 		return
 	}
 	sig, err := auth.Parse(r.Header, now, s.cfg.ClockSkew())
@@ -79,9 +88,37 @@ func (s *Server) join(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Runs inside the join, before the invitation is used up: a refused binding leaves the code as it was
+	check := func(invitationID int64, bound bool) (string, error) {
+		if req.Binding == nil {
+			if bound {
+				return "", store.ErrBindingRequired
+			}
+			return "", nil
+		}
+		p, err := binding.Verify(*req.Binding, s.cfg.BindingKeys(), now, s.cfg.ClockSkew())
+		switch {
+		case err != nil:
+			s.log.Warn("binding refused", "station", sig.KeyFP, "reason", err)
+			return "", errBindingInvalid
+		case p.Station != sig.KeyFP:
+			s.log.Warn("binding refused", "station", sig.KeyFP, "reason", "names another station")
+			return "", errBindingInvalid
+		case p.InvitationID != invitationID:
+			s.log.Warn("binding refused", "station", sig.KeyFP, "reason", "names another invitation")
+			return "", errBindingInvalid
+		}
+		return p.Account, nil
+	}
 	st, err := s.store.Join(sig.KeyFP, req.PublicKey, req.Invitation, s.cfg.JoinMode == "approval",
-		s.cfg.Aggregation.TrustStart, now)
+		s.cfg.Aggregation.TrustStart, check, now)
 	switch {
+	case errors.Is(err, store.ErrBindingRequired):
+		writeError(w, http.StatusForbidden, "binding_required", "this invitation is valid only with a binding")
+		return
+	case errors.Is(err, errBindingInvalid):
+		writeError(w, http.StatusForbidden, "binding_invalid", "the binding does not fit this station and invitation")
+		return
 	case errors.Is(err, store.ErrInvitationInvalid):
 		writeError(w, http.StatusForbidden, "invitation_invalid", "invitation code is not valid")
 		return

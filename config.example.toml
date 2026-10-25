@@ -50,3 +50,9 @@ min_vote_age_days = 7             # a station's check reports count only after t
 # is meant for development. This keeps out versions the hub cannot combine; it does not prove a genuine client.
 allowed = []                      # e.g. ["vinyl-check/1.2.*", "vinyl-mind-probe/*"]
 detector_versions = []            # e.g. ["1"]
+
+[accounts]
+# An account service that hands out invitations to stations that sign in (docs/connect.md). The hub makes no
+# connection to it; it names the address to stations and checks the bindings the service signs.
+connect_url = ""                  # e.g. "https://accounts.example.org/connect/"; empty: stations join with a code
+binding_keys = []                 # public keys of the account service, base64url (32 bytes)

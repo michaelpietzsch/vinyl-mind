@@ -29,6 +29,8 @@ func TestExampleMatchesDefaults(t *testing.T) {
 	want.TrustedProxies, got.TrustedProxies = nil, nil
 	want.Clients, got.Clients = Clients{}, Clients{Allowed: nonEmpty(got.Clients.Allowed),
 		DetectorVersions: nonEmpty(got.Clients.DetectorVersions)}
+	got.Accounts.BindingKeys = nonEmpty(got.Accounts.BindingKeys)
+	got.bindingKeys, want.bindingKeys = nil, nil
 	got.proxies, want.proxies = nil, nil
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("config.example.toml differs from Default():\n got %+v\nwant %+v", got, want)
@@ -123,6 +125,27 @@ func TestClientPatternsInTheConfiguration(t *testing.T) {
 	for _, bad := range []string{"vinyl-check", "vinyl-check/", "Vinyl/1", "vinyl-check/1 2", "*/1"} {
 		if _, err := Load(write(t, "[clients]\nallowed = [\""+bad+"\"]\n")); err == nil {
 			t.Errorf("%q must be refused", bad)
+		}
+	}
+}
+
+func TestAccounts(t *testing.T) {
+	c, err := Load(write(t, "[accounts]\nconnect_url = \"https://accounts.example.org/connect/\"\n"+
+		"binding_keys = [\"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo\"]\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := c.BindingKeys()["SHA256:If4x36FUomFia/hUBG/SJxt77UtqvkWqWId+9H+XIbk"]; !ok {
+		t.Fatalf("binding key by fingerprint: %v", c.BindingKeys())
+	}
+	for _, bad := range []string{
+		"[accounts]\nconnect_url = \"http://accounts.example.org/\"\n",
+		"[accounts]\nconnect_url = \"https://user@accounts.example.org/\"\n",
+		"[accounts]\nconnect_url = \"https://accounts.example.org/?next=evil\"\n",
+		"[accounts]\nbinding_keys = [\"not-a-key\"]\n",
+	} {
+		if _, err := Load(write(t, bad)); err == nil {
+			t.Errorf("must be refused: %q", bad)
 		}
 	}
 }

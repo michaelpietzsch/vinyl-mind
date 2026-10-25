@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/michaelpietzsch/vinyl-mind/internal/auth"
+	"github.com/michaelpietzsch/vinyl-mind/internal/binding"
 	"github.com/michaelpietzsch/vinyl-mind/internal/client"
 	"github.com/michaelpietzsch/vinyl-mind/internal/config"
 	"github.com/michaelpietzsch/vinyl-mind/internal/hub"
@@ -58,7 +59,7 @@ func newEnv(t *testing.T, edit func(*config.Config)) *env {
 	e.srv = New(cfg, st, key, e.hub, "test", clock, nil)
 	e.http = httptest.NewServer(e.srv.Handler())
 	t.Cleanup(func() { e.http.Close(); st.Close() })
-	if _, err := st.AddInvitation("invitation-code", 1000, nil, e.now); err != nil {
+	if _, err := st.AddInvitation("invitation-code", 1000, nil, false, e.now); err != nil {
 		t.Fatal(err)
 	}
 	return e
@@ -577,5 +578,63 @@ func TestJoinsPerDay(t *testing.T) {
 	e.now = e.now.Add(25 * time.Hour)
 	if r, _ := third.Join(&code); r.Status != 201 {
 		t.Fatalf("next day: %d %s", r.Status, r.Body)
+	}
+}
+
+func TestBindingOnJoin(t *testing.T) {
+	accPub, accPriv, _ := ed25519.GenerateKey(rand.Reader)
+	e := newEnv(t, func(c *config.Config) {
+		c.Accounts = config.Accounts{ConnectURL: "https://accounts.example.org/connect/",
+			BindingKeys: []string{keys.Encode(accPub)}}
+	})
+	info, _ := e.station().Connect()
+	if info.ConnectURL != "https://accounts.example.org/connect/" {
+		t.Fatalf("server info must name connect_url: %+v", info)
+	}
+	id, _ := e.store.AddInvitation("pool-code-0001", 1, nil, true, e.now)
+	code := "pool-code-0001"
+	s := e.station()
+	bind := func(station string, invitation int64, account string) string {
+		tok, err := binding.Sign(accPriv, binding.Payload{V: 1, InvitationID: invitation, Station: station,
+			Account: account, Iat: e.now.Unix(), Exp: e.now.Add(72 * time.Hour).Unix()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return tok
+	}
+	uses := func() int { invs, _ := e.store.Invitations(); return invs[0].Uses }
+	if r, _ := s.Join(&code); r.Status != 403 || errorCode(r) != "binding_required" {
+		t.Fatalf("bound code without binding: %d %s", r.Status, r.Body)
+	}
+	other := e.station()
+	if r, _ := s.JoinBound(&code, bind(other.Fingerprint(), id, "acct-AAAAAAAAAAAAAAAA")); r.Status != 403 ||
+		errorCode(r) != "binding_invalid" {
+		t.Fatalf("binding for another station: %d %s", r.Status, r.Body)
+	}
+	if r, _ := s.JoinBound(&code, bind(s.Fingerprint(), id+1, "acct-AAAAAAAAAAAAAAAA")); r.Status != 403 {
+		t.Fatalf("binding for another invitation: %d %s", r.Status, r.Body)
+	}
+	if uses() != 0 {
+		t.Fatal("refused joins must not use up the code")
+	}
+	// The binding of one station is worthless for another: the other station cannot join with it
+	stolen := bind(s.Fingerprint(), id, "acct-AAAAAAAAAAAAAAAA")
+	if r, _ := other.JoinBound(&code, stolen); r.Status != 403 || errorCode(r) != "binding_invalid" {
+		t.Fatalf("stolen binding: %d %s", r.Status, r.Body)
+	}
+	if r, _ := s.JoinBound(&code, stolen); r.Status != 201 {
+		t.Fatalf("own binding: %d %s", r.Status, r.Body)
+	}
+	if st, _ := e.store.Station(s.Fingerprint()); st.Account != "acct-AAAAAAAAAAAAAAAA" {
+		t.Fatalf("account not stored: %+v", st)
+	}
+	// Joining again returns the station; the used-up code and its binding are not looked at again
+	if r, _ := s.JoinBound(&code, stolen); r.Status != 200 {
+		t.Fatalf("joining again: %d %s", r.Status, r.Body)
+	}
+	lone := e.station()
+	if r := do(t, lone, "POST", "/v1/join", map[string]any{"public_key": keys.Encode(lone.Key.Public().(ed25519.PublicKey)),
+		"binding": stolen}, 422); !strings.Contains(string(r.Body), "belongs to an invitation") {
+		t.Fatalf("binding without invitation: %s", r.Body)
 	}
 }

@@ -20,8 +20,21 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// SchemaVersion is the version of the tables below; a database written by a newer server is refused.
-const SchemaVersion = 1
+// SchemaVersion is the version of the tables: the first schema below plus the migrations. A database written by a
+// newer server is refused.
+const SchemaVersion = 2
+
+// migrations[i] takes the schema from version i+1 to i+2. Only additions, so an older backup can always be opened.
+var migrations = [][]string{
+	{ // 2: invitations valid only with a binding from an account service, and the account a station belongs to
+		"ALTER TABLE invitations ADD COLUMN bound INTEGER NOT NULL DEFAULT 0",
+		"ALTER TABLE stations ADD COLUMN account TEXT",
+		"CREATE INDEX IF NOT EXISTS stations_account ON stations (account)",
+		// Counters for the operator: contributions that changed something, and when the last one came
+		"ALTER TABLE stations ADD COLUMN contributions_total INTEGER NOT NULL DEFAULT 0",
+		"ALTER TABLE stations ADD COLUMN last_contribution_at BIGINT",
+	},
+}
 
 const schema = `
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -128,19 +141,32 @@ func (s *Store) migrate() error {
 			}
 		}
 		var v string
+		version := 1 // a database without a version was created just now, by the first schema above
 		err := tx.QueryRow(s.q("SELECT value FROM meta WHERE key = ?"), "schema_version").Scan(&v)
-		if errors.Is(err, sql.ErrNoRows) {
-			_, err = tx.Exec(s.q("INSERT INTO meta (key, value) VALUES (?, ?)"), "schema_version",
-				strconv.Itoa(SchemaVersion))
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			if _, err := tx.Exec(s.q("INSERT INTO meta (key, value) VALUES (?, ?)"), "schema_version", "1"); err != nil {
+				return err
+			}
+		case err != nil:
 			return err
+		default:
+			if version, err = strconv.Atoi(v); err != nil {
+				return fmt.Errorf("schema version %q", v)
+			}
 		}
-		if err != nil {
-			return err
+		if version > SchemaVersion {
+			return fmt.Errorf("database schema %d is newer than this server (%d)", version, SchemaVersion)
 		}
-		if n, _ := strconv.Atoi(v); n > SchemaVersion {
-			return fmt.Errorf("database schema %d is newer than this server (%d)", n, SchemaVersion)
+		for ; version < SchemaVersion; version++ {
+			for _, stmt := range migrations[version-1] {
+				if _, err := tx.Exec(stmt); err != nil {
+					return fmt.Errorf("migration to schema %d: %w", version+1, err)
+				}
+			}
 		}
-		return nil
+		_, err = tx.Exec(s.q("UPDATE meta SET value = ? WHERE key = ?"), strconv.Itoa(SchemaVersion), "schema_version")
+		return err
 	})
 }
 

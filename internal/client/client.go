@@ -32,6 +32,7 @@ type ServerInfo struct {
 	Join             string   `json:"join"`
 	FeatureVersions  []int    `json:"feature_versions"`
 	Clients          []string `json:"clients"`
+	ConnectURL       string   `json:"connect_url"`
 	DetectorVersions []string `json:"detector_versions"`
 	Time             int64    `json:"time"`
 }
@@ -129,9 +130,17 @@ func (s *Station) Do(method, target string, body any, header http.Header) (*Resp
 
 // Join registers the station's key, with an invitation code or without (then it waits for approval).
 func (s *Station) Join(invitation *string) (*Response, error) {
+	return s.JoinBound(invitation, "")
+}
+
+// JoinBound joins with an invitation and the binding an account service signed for it (docs/connect.md).
+func (s *Station) JoinBound(invitation *string, binding string) (*Response, error) {
 	body := map[string]any{"public_key": keys.Encode(s.Key.Public().(ed25519.PublicKey))}
 	if invitation != nil {
 		body["invitation"] = *invitation
+	}
+	if binding != "" {
+		body["binding"] = binding
 	}
 	return s.Do(http.MethodPost, "/v1/join", body, nil)
 }

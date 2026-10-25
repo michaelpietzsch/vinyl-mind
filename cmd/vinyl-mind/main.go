@@ -43,8 +43,9 @@ Server
   fingerprint                 print the fingerprint of the server key, to publish for stations
 
 Stations
-  invite [-uses n] [-days d] [-json]
-                              create an invitation code (shown once)
+  invite [-uses n] [-days d] [-bound] [-json]
+                              create an invitation code (shown once); -bound: valid only with an account
+                              service's binding (docs/connect.md)
   invitations [-json]         list invitation codes
   revoke-invitation <id>      make a code unusable
   revoke-invitation-stations <id> [-json]
@@ -52,6 +53,8 @@ Stations
   stations [-json]            list stations
   approve <fingerprint>       admit a waiting station
   revoke <fingerprint>        revoke a station's key and delete what it sent
+  revoke-account <account> [-json]
+                              revoke every station of an account (from an account service's binding)
   trust <fingerprint> <0..1>  set a station's trust, e.g. 1 for stations you know
 
 With -json, commands write one JSON object per line to stdout and nothing else; errors go to stderr with a
@@ -144,7 +147,7 @@ func versionArg(args []string) (int64, error) {
 
 func run(cfg config.Config, cmd string, args []string) error {
 	known := map[string]bool{"serve": true, "init": true, "fingerprint": true, "invite": true, "invitations": true,
-		"revoke-invitation": true, "revoke-invitation-stations": true, "trust": true, "stations": true, "approve": true, "revoke": true, "combine": true, "models": true,
+		"revoke-invitation": true, "revoke-invitation-stations": true, "revoke-account": true, "trust": true, "stations": true, "approve": true, "revoke": true, "combine": true, "models": true,
 		"publish": true, "withdraw": true, "prune": true, "backup": true, "access-log": true}
 	if !known[cmd] {
 		fmt.Fprint(os.Stderr, usage)
@@ -169,6 +172,7 @@ func run(cfg config.Config, cmd string, args []string) error {
 		uses := f.Int("uses", 1, "how many stations may join with the code")
 		days := f.Int("days", 14, "days until the code expires (0: never)")
 		asJSON := f.Bool("json", false, "one JSON object on stdout")
+		bound := f.Bool("bound", false, "valid only with a binding from an account service")
 		parse(f, args)
 		b := make([]byte, 16)
 		if _, err := rand.Read(b); err != nil {
@@ -180,12 +184,13 @@ func run(cfg config.Config, cmd string, args []string) error {
 			t := now.Add(time.Duration(*days) * 24 * time.Hour)
 			exp = &t
 		}
-		id, err := a.store.AddInvitation(code, *uses, exp, now)
+		id, err := a.store.AddInvitation(code, *uses, exp, *bound, now)
 		if err != nil {
 			return err
 		}
 		if *asJSON {
-			return jsonLine(map[string]any{"id": id, "code": code, "max_uses": *uses, "expires_at": unix(exp)})
+			return jsonLine(map[string]any{"id": id, "code": code, "max_uses": *uses, "expires_at": unix(exp),
+				"bound": *bound})
 		}
 		fmt.Printf("invitation %d: %s\n(shown only now; valid for %d station(s)", id, code, *uses)
 		if exp != nil {
@@ -203,7 +208,8 @@ func run(cfg config.Config, cmd string, args []string) error {
 		if *asJSON {
 			for _, i := range invs {
 				if err := jsonLine(map[string]any{"id": i.ID, "uses": i.Uses, "max_uses": i.MaxUses,
-					"expires_at": unix(i.ExpiresAt), "revoked": i.Revoked, "created_at": i.CreatedAt.Unix()}); err != nil {
+					"expires_at": unix(i.ExpiresAt), "revoked": i.Revoked, "bound": i.Bound,
+					"created_at": i.CreatedAt.Unix()}); err != nil {
 					return err
 				}
 			}
@@ -237,6 +243,28 @@ func run(cfg config.Config, cmd string, args []string) error {
 			return err
 		}
 		return a.revokeInvitationStations(id, *asJSON, now)
+	case "revoke-account":
+		f := flag.NewFlagSet("revoke-account", flag.ExitOnError)
+		asJSON := f.Bool("json", false, "one JSON object per revoked station")
+		pos := parse(f, args)
+		account, err := arg(pos, 0, "account")
+		if err != nil {
+			return err
+		}
+		fps, err := a.store.RevokeAccount(account, now)
+		if err != nil {
+			return err
+		}
+		for _, fp := range fps {
+			if *asJSON {
+				if err := jsonLine(map[string]any{"fingerprint": fp, "account": account}); err != nil {
+					return err
+				}
+			}
+		}
+		if !*asJSON {
+			fmt.Printf("%d station(s) of account %s revoked\n", len(fps), account)
+		}
 	case "trust":
 		fp, err := arg(args, 0, "station fingerprint")
 		if err != nil {
@@ -270,7 +298,9 @@ func run(cfg config.Config, cmd string, args []string) error {
 			for _, s := range sts {
 				if err := jsonLine(map[string]any{"fingerprint": s.KeyFP, "status": s.Status, "trust": s.Trust,
 					"profiles": s.Profiles, "joined_at": s.JoinedAt.Unix(), "last_seen_at": unix(s.LastSeenAt),
-					"invitation_id": s.InvitationID}); err != nil {
+					"invitation_id": s.InvitationID, "account": nullable(s.Account),
+					"contributions": s.Contributions, "last_contribution_at": unix(s.LastContrib),
+					"examples": s.Examples, "reports": s.Reports}); err != nil {
 					return err
 				}
 			}
@@ -429,6 +459,13 @@ func (a *app) revokeInvitationStations(id int64, asJSON bool, now time.Time) err
 		fmt.Printf("invitation %d revoked, %d station(s) revoked\n", id, n)
 	}
 	return nil
+}
+
+func nullable(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
 }
 
 // jsonLine writes one JSON object as one line, for scripts that read the output line by line.

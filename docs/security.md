@@ -22,6 +22,8 @@ are reported privately, see [SECURITY.md](../SECURITY.md).
 | the server's database is copied | it holds only public keys and hashes of invitation codes: nothing that lets anyone act as a station or join |
 | many fake stations | joining needs an invitation code (or the operator's approval); joins are rate-limited per address and per day for the whole server; all new stations together get at most 20 % of a model, which the trimmed mean cuts off; their votes count only after seven days and weigh by trust; claimed example counts are capped |
 | a station sends bad or deliberately wrong weights | self-check filter, robust combination (trimmed mean or median), each station's share capped at 25 % × trust, new stations start at trust 0.25; far-off contributions cost trust at once (`docs/aggregation.md`) |
+| an invitation from an account service is intercepted | it travels only from the account service to the station (PKCE, never in a URL), and it is bound to the station's key by a signed binding: no other key can use it (`docs/connect.md`) |
+| the account service is broken into | the hub has no endpoint for it; the damage is the few invitations in its pool, each revocable, and its signing key alone gives nothing without them |
 | a station tries to decide about a model alone | one vote per station on check reports, decisions need several stations, profiles that only report count against the profile limit |
 | a poisoned model gets published anyway | every station checks a model on its own recordings before it uses it, and reports; a model worse for most stations is withdrawn |
 | a station is compromised | the operator revokes its key (`vinyl-mind revoke`); its contributions and reports are deleted at once |
@@ -48,6 +50,10 @@ are reported privately, see [SECURITY.md](../SECURITY.md).
 
 - Go with few dependencies, `go.sum` pinned, Go toolchain at least 1.27.3 (older versions have known
   vulnerabilities in the standard library).
+- Fuzz tests feed arbitrary input to the parser of the specification, the signature headers, the binding, the
+  whole HTTP interface and signed contributions on their way into the database: the server must never answer with
+  a server error or crash, and must never accept or store what breaks the rules. A minute of each found nothing
+  (several million inputs); `go test -fuzz=<name> -fuzztime=…` runs them longer.
 - CI: `gofmt`, `go vet`, tidy modules, `govulncheck`, tests with the race detector on Linux, macOS and Windows,
   storage tests on PostgreSQL, a container smoke test, and a Trivy scan of the image that fails on fixable HIGH or
   CRITICAL findings. GitHub Actions are pinned by commit and keep no credentials in the checkout. Dependabot

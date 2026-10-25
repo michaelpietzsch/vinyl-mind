@@ -18,7 +18,12 @@ const (
 var (
 	ErrInvitationInvalid  = errors.New("invitation invalid")
 	ErrInvitationRequired = errors.New("invitation required")
+	ErrBindingRequired    = errors.New("binding required")
 )
+
+// InvitationCheck decides, before an invitation is used up, whether this join may use it, and returns the account
+// the station is to belong to (empty for none). An error leaves the invitation untouched.
+type InvitationCheck func(invitationID int64, bound bool) (account string, err error)
 
 // Station is one registered key.
 type Station struct {
@@ -33,6 +38,11 @@ type Station struct {
 	ApprovedAt    *time.Time
 	LastSeenAt    *time.Time
 	Profiles      int
+	Account       string // opaque account id from an account service's binding, empty without
+	Contributions int    // accepted contributions that changed something, since joining
+	LastContrib   *time.Time
+	Examples      int // examples behind the current contributions (real plus false alarms, all kinds)
+	Reports       int
 }
 
 // Invitation is a code that lets stations join without waiting for approval.
@@ -42,6 +52,7 @@ type Invitation struct {
 	Uses      int
 	ExpiresAt *time.Time
 	Revoked   bool
+	Bound     bool // valid only with a binding from an account service
 	CreatedAt time.Time
 }
 
@@ -53,16 +64,17 @@ func CodeHash(code string) string {
 }
 
 // AddInvitation stores a new code (only its hash).
-func (s *Store) AddInvitation(code string, maxUses int, expires *time.Time, now time.Time) (int64, error) {
+func (s *Store) AddInvitation(code string, maxUses int, expires *time.Time, bound bool, now time.Time) (int64, error) {
 	var id int64
-	err := s.db.QueryRow(s.q(`INSERT INTO invitations (code_hash, max_uses, uses, expires_at, revoked, created_at)
-		VALUES (?, ?, 0, ?, 0, ?) RETURNING id`), CodeHash(code), maxUses, msPtr(expires), ms(now)).Scan(&id)
+	err := s.db.QueryRow(s.q(`INSERT INTO invitations (code_hash, max_uses, uses, expires_at, revoked, bound,
+		created_at) VALUES (?, ?, 0, ?, 0, ?, ?) RETURNING id`), CodeHash(code), maxUses, msPtr(expires),
+		boolInt(bound), ms(now)).Scan(&id)
 	return id, err
 }
 
 // Invitations lists all codes, newest first.
 func (s *Store) Invitations() ([]Invitation, error) {
-	rows, err := s.db.Query(`SELECT id, max_uses, uses, expires_at, revoked, created_at FROM invitations
+	rows, err := s.db.Query(`SELECT id, max_uses, uses, expires_at, revoked, bound, created_at FROM invitations
 		ORDER BY id DESC`)
 	if err != nil {
 		return nil, err
@@ -73,7 +85,7 @@ func (s *Store) Invitations() ([]Invitation, error) {
 		var inv Invitation
 		var exp sql.NullInt64
 		var created int64
-		if err := rows.Scan(&inv.ID, &inv.MaxUses, &inv.Uses, &exp, &inv.Revoked, &created); err != nil {
+		if err := rows.Scan(&inv.ID, &inv.MaxUses, &inv.Uses, &exp, &inv.Revoked, &inv.Bound, &created); err != nil {
 			return nil, err
 		}
 		inv.ExpiresAt, inv.CreatedAt = fromMS(exp), time.UnixMilli(created)
@@ -90,7 +102,11 @@ func (s *Store) RevokeInvitation(id int64) (bool, error) {
 
 const stationCols = `s.id, s.key_fp, s.public_key, s.status, s.trust, s.trust_gained_at, s.invitation_id,
 	s.joined_at, s.approved_at, s.last_seen_at,
-	(SELECT COUNT(*) FROM contributions c WHERE c.station_id = s.id)`
+	(SELECT COUNT(*) FROM contributions c WHERE c.station_id = s.id), s.account, s.contributions_total,
+	s.last_contribution_at,
+	(SELECT COALESCE(SUM(k.n_real + k.n_false), 0) FROM contribution_kinds k
+	   JOIN contributions c ON c.id = k.contribution_id WHERE c.station_id = s.id),
+	(SELECT COUNT(*) FROM check_reports r WHERE r.station_id = s.id)`
 
 type scanner interface{ Scan(...any) error }
 
@@ -98,10 +114,13 @@ func scanStation(r scanner) (*Station, error) {
 	var st Station
 	var gained, approved, seen, inv sql.NullInt64
 	var joined int64
+	var account sql.NullString
+	var lastContrib sql.NullInt64
 	if err := r.Scan(&st.ID, &st.KeyFP, &st.PublicKey, &st.Status, &st.Trust, &gained, &inv, &joined, &approved,
-		&seen, &st.Profiles); err != nil {
+		&seen, &st.Profiles, &account, &st.Contributions, &lastContrib, &st.Examples, &st.Reports); err != nil {
 		return nil, err
 	}
+	st.Account, st.LastContrib = account.String, fromMS(lastContrib)
 	st.TrustGainedAt, st.ApprovedAt, st.LastSeenAt = fromMS(gained), fromMS(approved), fromMS(seen)
 	st.JoinedAt = time.UnixMilli(joined)
 	if inv.Valid {
@@ -148,7 +167,10 @@ func (s *Store) Stations() ([]Station, error) {
 // Join registers a station. With a valid invitation code it is active at once; without one it waits for the
 // operator, if allowPending. Joining again with the same key returns the existing station unchanged, so a station
 // can retry after a lost answer without using up an invitation.
-func (s *Store) Join(fp, publicKey string, code *string, allowPending bool, trust float64,
+//
+// With a code, check (if not nil) runs before the code is used up; a code created as bound needs a check that
+// accepts it.
+func (s *Store) Join(fp, publicKey string, code *string, allowPending bool, trust float64, check InvitationCheck,
 	now time.Time) (*Station, error) {
 	var out *Station
 	err := s.tx(func(tx *sql.Tx) error {
@@ -158,20 +180,39 @@ func (s *Store) Join(fp, publicKey string, code *string, allowPending bool, trus
 			return err
 		}
 		status := Pending
-		var invID any
+		var invID, accountVal any
 		if code != nil {
 			var id int64
-			// The conditions in the UPDATE are the check: two stations racing for the last use cannot both win
-			err := tx.QueryRow(s.q(`UPDATE invitations SET uses = uses + 1
-				WHERE code_hash = ? AND revoked = 0 AND uses < max_uses AND (expires_at IS NULL OR expires_at > ?)
-				RETURNING id`), CodeHash(*code), ms(now)).Scan(&id)
+			var bound bool
+			err := tx.QueryRow(s.q(`SELECT id, bound FROM invitations
+				WHERE code_hash = ? AND revoked = 0 AND uses < max_uses AND (expires_at IS NULL OR expires_at > ?)`),
+				CodeHash(*code), ms(now)).Scan(&id, &bound)
 			if errors.Is(err, sql.ErrNoRows) {
 				return ErrInvitationInvalid
 			}
 			if err != nil {
 				return err
 			}
+			account := ""
+			if check != nil {
+				if account, err = check(id, bound); err != nil {
+					return err
+				}
+			} else if bound {
+				return ErrBindingRequired
+			}
+			// The conditions in the UPDATE repeat the check: two stations racing for the last use cannot both win
+			n, err := tx.Exec(s.q(`UPDATE invitations SET uses = uses + 1 WHERE id = ? AND uses < max_uses`), id)
+			if err != nil {
+				return err
+			}
+			if used, _ := n.RowsAffected(); used == 0 {
+				return ErrInvitationInvalid
+			}
 			status, invID = Active, id
+			if account != "" {
+				accountVal = account
+			}
 		} else if !allowPending {
 			return ErrInvitationRequired
 		}
@@ -180,14 +221,41 @@ func (s *Store) Join(fp, publicKey string, code *string, allowPending bool, trus
 			approved = ms(now)
 		}
 		if _, err := tx.Exec(s.q(`INSERT INTO stations (key_fp, public_key, status, trust, invitation_id, joined_at,
-			approved_at) VALUES (?, ?, ?, ?, ?, ?, ?)`), fp, publicKey, status, trust, invID, ms(now),
-			approved); err != nil {
+			approved_at, account) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`), fp, publicKey, status, trust, invID, ms(now),
+			approved, accountVal); err != nil {
 			return err
 		}
 		out, err = s.station(tx, fp)
 		return err
 	})
 	return out, err
+}
+
+// RevokeAccount revokes every station of an account and deletes what they sent, and returns their fingerprints.
+func (s *Store) RevokeAccount(account string, now time.Time) ([]string, error) {
+	rows, err := s.db.Query(s.q("SELECT key_fp FROM stations WHERE account = ? AND status <> ?"), account, Revoked)
+	if err != nil {
+		return nil, err
+	}
+	var fps []string
+	for rows.Next() {
+		var fp string
+		if err := rows.Scan(&fp); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		fps = append(fps, fp)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for _, fp := range fps {
+		if _, err := s.SetStatus(fp, Revoked, now); err != nil {
+			return nil, err
+		}
+	}
+	return fps, nil
 }
 
 // JoinsSince counts the stations that joined since t.

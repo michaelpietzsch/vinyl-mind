@@ -38,7 +38,7 @@ func newFixture(t *testing.T) *fixture {
 	cfg := config.Default()
 	// Stations in these tests report the moment they join; the minimum age gets a test of its own
 	cfg.Publication.MinVoteAgeDays = 0
-	if _, err := st.AddInvitation("invitation", 1000, nil, t0); err != nil {
+	if _, err := st.AddInvitation("invitation", 1000, nil, false, t0); err != nil {
 		t.Fatal(err)
 	}
 	return &fixture{t: t, st: st, hub: New(cfg, st, priv, nil), pub: pub, cfg: cfg, ids: map[string]int64{},
@@ -51,7 +51,7 @@ func (f *fixture) station(name string) int64 {
 		return id
 	}
 	code := "invitation"
-	s, err := f.st.Join("fp-"+name, "pk-"+name, &code, true, f.trust, t0)
+	s, err := f.st.Join("fp-"+name, "pk-"+name, &code, true, f.trust, nil, t0)
 	if err != nil {
 		f.t.Fatal(err)
 	}

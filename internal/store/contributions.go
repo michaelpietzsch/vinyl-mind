@@ -56,7 +56,11 @@ func (s *Store) PutContribution(stationID int64, profileID string, d *spec.Contr
 		}
 		if len(old) == 1 && old[0].same(d) {
 			changed = false
-			_, err := tx.Exec(s.q("UPDATE contributions SET received_at = ? WHERE id = ?"), ms(now), old[0].ID)
+			if _, err := tx.Exec(s.q("UPDATE contributions SET received_at = ? WHERE id = ?"), ms(now),
+				old[0].ID); err != nil {
+				return err
+			}
+			_, err := tx.Exec(s.q("UPDATE stations SET last_contribution_at = ? WHERE id = ?"), ms(now), stationID)
 			return err
 		}
 		if len(old) == 0 {
@@ -81,6 +85,10 @@ func (s *Store) PutContribution(stationID int64, profileID string, d *spec.Contr
 			detector_version, client_name, client_version, chain_class, trained_at, received_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`), stationID, profileID, d.FeatureVersion,
 			d.DetectorVersion, d.Client.Name, d.Client.Version, d.Chain.Class(), d.TrainedAt, ms(now)).Scan(&id); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(s.q(`UPDATE stations SET contributions_total = contributions_total + 1,
+			last_contribution_at = ? WHERE id = ?`), ms(now), stationID); err != nil {
 			return err
 		}
 		for kind, k := range d.Kinds {

@@ -4,9 +4,11 @@
 package config
 
 import (
+	"crypto/ed25519"
 	"errors"
 	"fmt"
 	"net/netip"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -15,6 +17,8 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+
+	"github.com/michaelpietzsch/vinyl-mind/internal/keys"
 )
 
 // Aggregation controls how contributions are combined (docs/aggregation.md).
@@ -80,6 +84,13 @@ func (c Clients) AcceptsDetector(version string) bool {
 	return len(c.DetectorVersions) == 0 || slices.Contains(c.DetectorVersions, version)
 }
 
+// Accounts ties the hub to an account service that hands out invitations (docs/connect.md). The hub makes no
+// connection to it: it names the address to stations and checks the bindings the service signs.
+type Accounts struct {
+	ConnectURL  string   `toml:"connect_url"`  // where stations connect by signing in; empty: no account service
+	BindingKeys []string `toml:"binding_keys"` // public keys (base64url, 32 bytes) whose bindings are accepted
+}
+
 // Config is the whole configuration.
 type Config struct {
 	DataDir               string   `toml:"-"`
@@ -100,8 +111,10 @@ type Config struct {
 	Aggregation Aggregation `toml:"aggregation"`
 	Publication Publication `toml:"publication"`
 	Clients     Clients     `toml:"clients"`
+	Accounts    Accounts    `toml:"accounts"`
 
-	proxies []netip.Prefix
+	proxies     []netip.Prefix
+	bindingKeys map[string]ed25519.PublicKey
 }
 
 // Default is the configuration without file and environment.
@@ -201,6 +214,21 @@ func (c *Config) Check() error {
 			bad("clients.allowed: %q is not \"name/version\" or \"name/prefix*\"", a)
 		}
 	}
+	if u := c.Accounts.ConnectURL; u != "" {
+		p, err := url.Parse(u)
+		if err != nil || p.Scheme != "https" || p.Host == "" || p.User != nil || p.Fragment != "" || p.RawQuery != "" {
+			bad("accounts.connect_url must be an https URL without user, query or fragment, not %q", u)
+		}
+	}
+	c.bindingKeys = map[string]ed25519.PublicKey{}
+	for _, k := range c.Accounts.BindingKeys {
+		pub, err := keys.ParsePublic(k)
+		if err != nil {
+			bad("accounts.binding_keys: %q is not an Ed25519 public key in base64url", k)
+			continue
+		}
+		c.bindingKeys[keys.Fingerprint(pub)] = pub
+	}
 	if c.ClockSkewS < 30 {
 		bad("clock_skew_s must be at least 30")
 	}
@@ -219,6 +247,9 @@ func (c *Config) Check() error {
 	}
 	return errors.Join(errs...)
 }
+
+// BindingKeys are the accepted keys of account services, by fingerprint (filled by Check).
+func (c *Config) BindingKeys() map[string]ed25519.PublicKey { return c.bindingKeys }
 
 // DBURL is the database URL, by default a SQLite file in the data directory.
 func (c *Config) DBURL() string {

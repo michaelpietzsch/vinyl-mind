@@ -43,6 +43,9 @@ Paths and secrets come from the environment:
 | `VINYL_MIND_ADMIN_TOKEN` | at least 32 characters; switches on the read-only overview at `/admin` |
 | `VINYL_MIND_LISTEN` | address to listen on, default `:8080` |
 
+With an account service (`docs/connect.md`), `[accounts]` names its `connect_url` and its public
+`binding_keys`. The hub makes no connection to it.
+
 Three settings matter most:
 
 - `join_mode`: `invitation` admits only stations with a code from `vinyl-mind invite`; `approval` lets stations
@@ -109,7 +112,9 @@ Everything that changes the server is a command; over the network nothing can be
 | `vinyl-mind approve <fingerprint>` | admit a waiting station (`join_mode = "approval"`) |
 | `vinyl-mind revoke <fingerprint>` | revoke a key and delete what the station sent |
 | `vinyl-mind trust <fingerprint> <0..1>` | set a station's trust, for example 1 for the stations you know, so that new stations cannot outweigh them from the start |
-| `vinyl-mind revoke-invitation-stations <id>` | revoke a code and every station that joined with it, for example when the account it was given to is closed |
+| `vinyl-mind revoke-invitation-stations <id>` | revoke a code and every station that joined with it, for example when one station is disconnected |
+| `vinyl-mind revoke-account <account>` | revoke every station of an account, when the account service closes or blocks it |
+| `vinyl-mind invite -bound` | a code that is valid only with an account service's binding (`docs/connect.md`), for the pool of an account service |
 | `vinyl-mind combine [-dry-run]` | combine now instead of waiting for the background job |
 | `vinyl-mind models` | models with status and check reports |
 | `vinyl-mind publish <version>`, `withdraw <version> -reason "…"` | the operator's decisions, for example at the start, when too few stations report |

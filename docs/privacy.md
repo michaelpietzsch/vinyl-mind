@@ -16,7 +16,7 @@ documents with fields it does not know.
 
 | What | Content | How long |
 |---|---|---|
-| Station | public key and its fingerprint, status (waiting, active, revoked), trust, when it joined, was approved and was last seen, which invitation it used | until the station leaves; a revoked key stays so that it cannot join again |
+| Station | public key and its fingerprint, status (waiting, active, revoked), trust, when it joined, was approved and was last seen, which invitation it used; if it joined through an account service, the **opaque account id** from the binding (random, unrelated to e-mail or name); how many contributions it sent and when the last one came | until the station leaves; a revoked key stays so that it cannot join again |
 | Invitation | the SHA-256 of the code (never the code), how often it may be and was used, expiry | until the operator deletes the database |
 | Contribution, per profile | the station's random profile ID, feature, detector and client version, coarse chain class (USB turntable or turntable with interface; MM, MC or unknown), when it was trained and received; per kind the coefficients, the counts of examples and the cross-check errors | until the station replaces or withdraws it, leaves, or is revoked |
 | Check report | profile ID, model version, per kind the error of the local and the global model, whether the model was adopted, the verdict | until the station leaves or is revoked, or the model is deleted |
@@ -27,6 +27,9 @@ documents with fields it does not know.
 The server's own log (standard error of the container) records start and stop, new candidates, published and
 withdrawn models, trust changes with the station's key fingerprint, and errors. It does not record request
 bodies.
+
+An account service that hands out invitations (`docs/connect.md`) keeps the personal data of its accounts (e-mail,
+name) itself; the hub only ever sees the opaque account id.
 
 ## Leaving and revoking
 

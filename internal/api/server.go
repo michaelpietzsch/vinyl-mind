@@ -351,7 +351,7 @@ func (s *Server) healthz(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) serverInfo(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
+	answer := map[string]any{
 		"name": "vinyl-mind", "version": s.version,
 		"public_key": keys.Encode(s.key.Public().(ed25519.PublicKey)), "fingerprint": s.fp,
 		"join": s.cfg.JoinMode, "feature_versions": s.cfg.FeatureVersions,
@@ -360,7 +360,11 @@ func (s *Server) serverInfo(w http.ResponseWriter, _ *http.Request) {
 		// Lets a station notice a wrong clock before its signed requests are refused as stale
 		"time":   s.now().Unix(),
 		"limits": map[string]int{"max_body": spec.MaxBody, "max_profiles": s.cfg.MaxProfilesPerStation},
-	})
+	}
+	if s.cfg.Accounts.ConnectURL != "" {
+		answer["connect_url"] = s.cfg.Accounts.ConnectURL
+	}
+	writeJSON(w, http.StatusOK, answer)
 }
 
 func orEmpty(xs []string) []string {

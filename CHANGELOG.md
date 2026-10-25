@@ -5,6 +5,15 @@ names the feature versions it accepts.
 
 ## Unreleased
 
+- Connecting by signing in on a website (`docs/connect.md`): `[accounts]` with `connect_url` (named in
+  `GET /v1/server`) and `binding_keys`; `POST /v1/join` takes a `binding` signed by the account service that ties the
+  invitation to the station's key (403 `binding_required` / `binding_invalid`, checked before the code is used up);
+  `invite -bound`; the opaque account id per station; `revoke-account`.
+- `stations -json` also shows `account`, `contributions`, `last_contribution_at`, `examples` and `reports`.
+- Schema 2, migrated automatically (only additions). An older server refuses a database at schema 2: back up
+  before updating (`vinyl-mind backup`).
+- Fuzz tests for the specification, signatures, binding and the whole HTTP interface.
+
 - Hardening against many cheap stations (for sign-up that hands out invitations automatically): claimed example
   counts are capped (`max_evidence`); all stations below full trust together get at most `newcomer_share` (20 %) of a
   model; check-report votes are weighted by trust and count only after `min_vote_age_days` (7); at most
