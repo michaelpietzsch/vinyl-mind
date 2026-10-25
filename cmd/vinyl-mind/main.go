@@ -118,6 +118,10 @@ func open(cfg config.Config) (*app, error) {
 	if err := os.MkdirAll(cfg.DataDir, 0o700); err != nil {
 		return nil, err
 	}
+	// Also an existing directory (a volume, or one made by an older version) is for the server's user only
+	if err := os.Chmod(cfg.DataDir, 0o700); err != nil {
+		return nil, err
+	}
 	key, err := keys.LoadOrCreate(cfg.ServerKeyPath())
 	if err != nil {
 		return nil, err

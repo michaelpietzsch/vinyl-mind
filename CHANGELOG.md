@@ -5,6 +5,11 @@ names the feature versions it accepts.
 
 ## Unreleased
 
+- The SQLite database (with its -wal and -shm files) and the data directory are readable by the server's user only
+  (0600, 0700), also when they already existed with wider permissions.
+
+## 0.1.5 – 2026-10-25
+
 - Connecting by signing in on a website (`docs/connect.md`): `[accounts]` with `connect_url` (named in
   `GET /v1/server`) and `binding_keys`; `POST /v1/join` takes a `binding` signed by the account service that ties the
   invitation to the station's key (403 `binding_required` / `binding_invalid`, checked before the code is used up);

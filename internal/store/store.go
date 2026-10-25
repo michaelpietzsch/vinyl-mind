@@ -12,6 +12,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -108,6 +109,17 @@ func Open(url string) (*Store, error) {
 	if err := s.migrate(); err != nil {
 		s.db.Close()
 		return nil, err
+	}
+	if !s.pg {
+		// The database holds the access log with client addresses: readable by the server's user only. SQLite
+		// creates its -wal and -shm files with the database file's permissions, so later ones follow.
+		path := strings.TrimPrefix(url, "sqlite://")
+		for _, f := range []string{path, path + "-wal", path + "-shm"} {
+			if err := os.Chmod(f, 0o600); err != nil && !errors.Is(err, os.ErrNotExist) {
+				s.db.Close()
+				return nil, err
+			}
+		}
 	}
 	return s, nil
 }

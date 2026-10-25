@@ -26,7 +26,7 @@ ARG TARGETOS TARGETARCH
 # No cgo (SQLite is pure Go), so the binary is static and the runtime image needs no libc
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
     go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o /out/vinyl-mind ./cmd/vinyl-mind \
- && mkdir -p /out/data
+ && mkdir -p /out/data && chmod 700 /out/data
 
 FROM ${RUNTIME_IMAGE}
 LABEL org.opencontainers.image.title="vinyl-mind" \

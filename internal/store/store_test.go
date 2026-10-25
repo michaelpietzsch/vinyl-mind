@@ -413,3 +413,25 @@ func TestStationCounters(t *testing.T) {
 		}
 	})
 }
+
+func TestDatabaseReadableByOwnerOnly(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no Unix permission bits")
+	}
+	path := filepath.Join(t.TempDir(), "vm.sqlite")
+	s, err := Open("sqlite://" + path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = s.AddInvitation("c", 1, nil, false, t0) // writes, so that -wal and -shm exist
+	s.Close()
+	if s, err = Open("sqlite://" + path); err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for _, f := range []string{path, path + "-wal", path + "-shm"} {
+		if info, err := os.Stat(f); err == nil && info.Mode().Perm() != 0o600 {
+			t.Errorf("%s: mode %v, want 0600", filepath.Base(f), info.Mode().Perm())
+		}
+	}
+}
