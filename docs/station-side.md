@@ -85,6 +85,14 @@ Every request carries `Vinyl-Mind-Client: vinyl-check/<version>`, and a contribu
 If the server answers `403 client_not_accepted`, the station stops contributing and tells the user to update; the
 list of accepted versions is in `GET /v1/server`. Status and leaving keep working.
 
+`401 unknown_key` (the hub does not know the key: the station left, or the hub lost its database) and `403 revoked`
+end the connection: the station forgets the hub connection and its key and offers to connect again, with a new key.
+After `revoked` that is the only way; after `unknown_key` joining again with the same key would also work, but a new
+one is never wrong. The profiles, their models and an adopted global model stay: they belong to the station, not to
+the connection.
+
+The hub's URL is `https`. Plain `http` only for a hub on a loopback address, for tests and development.
+
 Every later request is signed as `spec/signing.md` describes, with a new nonce each time. The test vector there
 checks the encodings. Bodies are sent as bytes with `Content-Length` (in Python: `content=` or `data=` with
 `bytes`, never a generator or file stream), since chunked bodies are refused; the signature covers exactly those
@@ -100,6 +108,9 @@ bytes anyway.
   `n_master` (`n_real + n_false - n_manual`), `master_recordings`, `cv_err_est`, `cv_err_raw` (above 10 and 100
   sent as 10 and 100), `informative` when a feature did not vary, optionally `auc` (`_auc()` exists but is not
   reported by `train()` yet).
+- A kind with a coefficient outside `coef_bound` (±50 in the shared scaling) is left out of the contribution, the
+  other kinds are sent. Such a weight comes from a degenerate fit (for example a feature that separates the examples
+  perfectly); clipping it would send a different model than the one the station uses.
 - When offline or on errors: keep the newest contribution per profile, retry with growing pauses, honour
   `Retry-After` on 429. An unchanged contribution costs nothing on the server.
 
