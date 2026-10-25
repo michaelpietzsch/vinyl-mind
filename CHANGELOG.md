@@ -3,7 +3,7 @@
 Versions of the server. The specification has its own versions (feature versions in `spec/`); a server release
 names the feature versions it accepts.
 
-## Unreleased
+## 0.1.6 – 2026-10-25
 
 - `vinyl-mind backup -keep n <dir>` removes all but the newest n backups in dir afterwards; files it did not
   write stay.
