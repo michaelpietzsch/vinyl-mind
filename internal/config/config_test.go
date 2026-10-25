@@ -89,10 +89,11 @@ func TestShortAdminTokenIsRefused(t *testing.T) {
 }
 
 func TestClients(t *testing.T) {
-	c := Clients{Allowed: []string{"vinyl-check/1.2.*", "vinyl-mind-probe/1"}, DetectorVersions: []string{"1"}}
+	c := Clients{Allowed: []string{"vinyl-check/1.2.*", "vinyl-mind-probe/1", "other-tool/*"}, DetectorVersions: []string{"1"}}
 	for client, want := range map[string]bool{
 		"vinyl-check/1.2.0": true, "vinyl-check/1.2.10": true, "vinyl-check/1.3.0": false,
 		"vinyl-mind-probe/1": true, "vinyl-mind-probe/2": false, "other/1.2.0": false,
+		"other-tool/0.1": true, "other-tool/9": true,
 	} {
 		if got := c.AcceptsClient(client); got != want {
 			t.Errorf("%s: %v", client, got)
@@ -111,4 +112,17 @@ func nonEmpty(xs []string) []string {
 		return nil
 	}
 	return xs
+}
+
+func TestClientPatternsInTheConfiguration(t *testing.T) {
+	for _, ok := range []string{"vinyl-mind-probe/*", "vinyl-check/1.2.*", "vinyl-check/1.2.0"} {
+		if _, err := Load(write(t, "[clients]\nallowed = [\""+ok+"\"]\n")); err != nil {
+			t.Errorf("%s must be accepted: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"vinyl-check", "vinyl-check/", "Vinyl/1", "vinyl-check/1 2", "*/1"} {
+		if _, err := Load(write(t, "[clients]\nallowed = [\""+bad+"\"]\n")); err == nil {
+			t.Errorf("%q must be refused", bad)
+		}
+	}
 }

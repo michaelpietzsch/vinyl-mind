@@ -51,7 +51,8 @@ type Clients struct {
 	DetectorVersions []string `toml:"detector_versions"` // exact versions
 }
 
-var clientPattern = regexp.MustCompile(`^[a-z0-9-]{1,32}/[0-9A-Za-z][0-9A-Za-z.+_-]{0,31}\*?$`)
+// "name/*" accepts every version of a client, "name/1.2.*" a range, "name/1.2.0" one version
+var clientPattern = regexp.MustCompile(`^[a-z0-9-]{1,32}/(\*|[0-9A-Za-z][0-9A-Za-z.+_-]{0,31}\*?)$`)
 
 // AcceptsClient reports whether a client "name/version" is allowed.
 func (c Clients) AcceptsClient(client string) bool {

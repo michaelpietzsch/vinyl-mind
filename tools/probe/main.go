@@ -102,6 +102,15 @@ func main() {
 		check(resp.StatusCode == 413, "a 20 KiB body is refused (got %d)", resp.StatusCode)
 	}
 
+	if len(info.Clients) > 0 {
+		// Refused before the invitation is looked at, so this needs no code and changes nothing on the server
+		_, other, _ := ed25519.GenerateKey(rand.Reader)
+		unlisted := &client.Station{Base: base, Key: other, HTTP: hc, Client: "not-a-listed-client/0",
+			ServerKey: st.ServerKey}
+		r, err := unlisted.Join(nil)
+		check(err == nil && r.Status == 403 && strings.Contains(string(r.Body), "client_not_accepted"),
+			"a client that is not on the list is refused (got %v)", status(r, err))
+	}
 	if *invitation != "" {
 		r, err := st.Join(invitation)
 		check(err == nil && r != nil && r.Status == 201, "join with the invitation (got %v)", status(r, err))
