@@ -98,9 +98,12 @@ func (s *Server) entry(m *store.Model) map[string]any {
 	if m == nil {
 		return nil
 	}
+	// seq grows with every status change of the model, so that a station keeping a statement can tell the
+	// newer from the older whatever the clocks did
 	state, _ := json.Marshal(map[string]any{
 		"spec": "vinyl-mind/model-state", "server": s.fp, "version": m.Version, "status": m.Status,
-		"published_at": unix(m.PublishedAt), "withdrawn_at": unix(m.WithdrawnAt), "at": s.now().Unix(),
+		"published_at": unix(m.PublishedAt), "withdrawn_at": unix(m.WithdrawnAt), "seq": m.StateRev,
+		"at": s.now().Unix(),
 	})
 	e := map[string]any{
 		"state_jws": keys.JWSSignTyped(s.key, keys.StateType, state),

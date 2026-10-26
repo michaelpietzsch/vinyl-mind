@@ -28,6 +28,7 @@ type Params struct {
 	ChainShift     float64 // spread of each chain's feature offsets (what the shared scaling must absorb)
 	RecordShift    float64 // spread of each record's feature offsets: records differ, so does what is a click
 	Anchors        int     // honest stations the operator trusts; the other honest ones are newcomers at the automatic maximum
+	BadAnchors     int     // anchors that turned: operator-trusted stations sending the attackers' model
 	Attackers      int     // stations sending a model that points the other way, with inflated claims
 	AttackerTrust  float64 // the attackers' trust: the automatic maximum is what patience buys them
 	NoGC           float64 // share of the honest stations without a second opinion: gc and gc_missing are constant
@@ -416,14 +417,19 @@ func Run(p Params) (*Report, error) {
 		honest = append(honest, in)
 	}
 	attacked := append([]hub.Input(nil), honest...)
+	bad := make([]float64, len(Truth))
+	for i := range bad {
+		bad[i] = -3 * Truth[i]
+	}
+	badKind := spec.KindContribution{Coef: bad, NReal: 5_000_000, NFalse: 5_000_000, NManual: 5_000_000,
+		NMaster: 5_000_000, MasterRecordings: 1000, CVErrEst: 0, CVErrRaw: 1}
 	for a := 0; a < p.Attackers; a++ {
-		bad := make([]float64, len(Truth))
-		for i := range bad {
-			bad[i] = -3 * Truth[i]
-		}
 		attacked = append(attacked, hub.Input{StationID: int64(1000 + a), ProfileID: fmt.Sprint("attacker-", a),
-			Trust: p.AttackerTrust, Kind: spec.KindContribution{Coef: bad, NReal: 5_000_000, NFalse: 5_000_000,
-				NManual: 5_000_000, NMaster: 5_000_000, MasterRecordings: 1000, CVErrEst: 0, CVErrRaw: 1}})
+			Trust: p.AttackerTrust, Kind: badKind})
+	}
+	for a := 0; a < p.BadAnchors; a++ {
+		attacked = append(attacked, hub.Input{StationID: int64(2000 + a), ProfileID: fmt.Sprint("bad-anchor-", a),
+			Trust: 1, Anchor: true, Kind: badKind})
 	}
 
 	unmasked := make([]hub.Input, len(honest))

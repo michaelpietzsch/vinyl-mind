@@ -441,15 +441,28 @@ func TestClientAddressBehindProxy(t *testing.T) {
 	req.Header.Set("X-Forwarded-For", "198.51.100.7, 203.0.113.9")
 	resp, _ := http.DefaultClient.Do(req)
 	resp.Body.Close()
+	e.srv.Flush() // requests without a key are counted and written at the flush
 	log, _ := e.store.AccessLog(1)
-	if log[0].Address != "203.0.113.9" {
-		t.Fatalf("rightmost untrusted hop expected, got %q", log[0].Address)
+	if log[0].Address != "203.0.113.9" || log[0].N != 1 {
+		t.Fatalf("rightmost untrusted hop expected, got %+v", log[0])
+	}
+	// The proxy's own request (a health check) carries no X-Forwarded-For and is the proxy's
+	req, _ = http.NewRequest("GET", e.http.URL+"/v1/server", nil)
+	resp, _ = http.DefaultClient.Do(req)
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("no X-Forwarded-For behind a trusted proxy: %d", resp.StatusCode)
+	}
+	e.srv.Flush()
+	if log, _ = e.store.AccessLog(1); log[0].Address != "127.0.0.1" {
+		t.Fatalf("the proxy's own request: %+v", log[0])
 	}
 	e2 := newEnv(t, nil)
 	req, _ = http.NewRequest("GET", e2.http.URL+"/v1/server", nil)
 	req.Header.Set("X-Forwarded-For", "203.0.113.9")
 	resp, _ = http.DefaultClient.Do(req)
 	resp.Body.Close()
+	e2.srv.Flush()
 	if log, _ = e2.store.AccessLog(1); log[0].Address != "127.0.0.1" {
 		t.Fatalf("an untrusted peer's X-Forwarded-For must be ignored, got %q", log[0].Address)
 	}

@@ -2,6 +2,7 @@ package hub
 
 import (
 	"math"
+	"strings"
 	"testing"
 
 	"github.com/michaelpietzsch/vinyl-mind/internal/config"
@@ -329,6 +330,90 @@ func TestNewcomersShareEqually(t *testing.T) {
 		}
 		if !near(u.Share, want) {
 			t.Fatalf("station %d: share %g, want %g", u.StationID, u.Share, want)
+		}
+	}
+}
+
+// The second review's B2-1: with two anchors there is no majority. Two that agree are a reference; two that
+// disagree are no reference at all, and nobody is held to a place between them.
+func TestTwoAnchors(t *testing.T) {
+	cfg := config.Default().Aggregation
+	in := anchors(2, 1)
+	for i := int64(10); i < 16; i++ {
+		in = append(in, Input{StationID: i, ProfileID: "p", Trust: cfg.TrustAutoMax, Kind: kind(1.1, 50, 2000, 0.06)})
+	}
+	r := Combine(in, cfg, 11)
+	if r.Coef == nil || r.Disagree != 0 {
+		t.Fatalf("two agreeing anchors make a model: %+v", r.Reason)
+	}
+	for _, u := range r.Used {
+		if u.Far || u.Clipped != 0 {
+			t.Fatalf("station %d held although everyone agrees: far %v clipped %d", u.StationID, u.Far, u.Clipped)
+		}
+	}
+	in[1].Kind = kind(50, 1_000_000, 1_000_000, 0) // one of the two turns
+	r = Combine(in, cfg, 11)
+	if r.Coef != nil || r.Disagree < farCount || !strings.Contains(r.Reason, "disagree") {
+		t.Fatalf("two disagreeing anchors must not make a model: coef %v reason %q disagree %d", r.Coef != nil,
+			r.Reason, r.Disagree)
+	}
+}
+
+// B2-1 with three and four anchors: one bad anchor is held by the median of all three; with four, the good ones
+// are held to each other and the bad one to the three good ones, also on a coefficient only four learned.
+func TestOneBadAnchorAmongFew(t *testing.T) {
+	cfg := config.Default().Aggregation
+	for _, n := range []int{3, 4} {
+		in := anchors(n-1, 1)
+		for i := int64(10); i < 16; i++ {
+			in = append(in, Input{StationID: i, ProfileID: "p", Trust: cfg.TrustAutoMax, Kind: kind(1.1, 50, 2000, 0.06)})
+		}
+		base := Combine(in, cfg, 11)
+		in = append(in, Input{StationID: 99, ProfileID: "p", Trust: 1, Anchor: true, Kind: kind(50, 1_000_000, 1_000_000, 0)})
+		r := Combine(in, cfg, 11)
+		if r.Coef == nil {
+			t.Fatalf("%d anchors, one bad: %s", n, r.Reason)
+		}
+		for j := range r.Coef {
+			if d := math.Abs(r.Coef[j] - base.Coef[j]); d > 0.3 {
+				t.Errorf("%d anchors: coefficient %d moved by %.3f", n, j, d)
+			}
+		}
+		for _, u := range r.Used {
+			switch {
+			case u.StationID == 99 && (!u.Far || u.Clipped != 11):
+				t.Errorf("%d anchors: the bad anchor is not held: far %v clipped %d", n, u.Far, u.Clipped)
+			case u.StationID != 99 && (u.Far || u.Clipped != 0):
+				t.Errorf("%d anchors: honest station %d held: far %v clipped %d", n, u.StationID, u.Far, u.Clipped)
+			}
+		}
+	}
+	// A coefficient only some anchors learned: the bad one learned it with three good ones
+	in := anchors(3, 1)
+	for i := range in {
+		in[i].Kind.Informative = []bool{true, true, true, true, true, true, true, true, true, true}
+	}
+	masked := Input{StationID: 20, ProfileID: "p", Trust: 1, Anchor: true, Kind: kind(1.1, 50, 2000, 0.06)}
+	masked.Kind.Informative = []bool{true, true, true, false, false, true, true, true, true, true}
+	in = append(in, masked, Input{StationID: 99, ProfileID: "p", Trust: 1, Anchor: true, Kind: kind(50, 1_000_000, 1_000_000, 0)})
+	r := Combine(in, cfg, 11)
+	if r.Coef[4] > 1.5 || r.Coef[5] > 1.5 {
+		t.Fatalf("a bad anchor on a coefficient four learned: %v", r.Coef)
+	}
+}
+
+// B2-10: a non-finite coefficient from the database must not break the combination.
+func TestNonFiniteCoefficientsAreExcluded(t *testing.T) {
+	cfg := config.Default().Aggregation
+	in := anchors(3, 1)
+	in[0].Kind.Coef[2] = math.NaN()
+	r := Combine(in, cfg, 11)
+	if len(r.Excluded) != 1 || r.Excluded[0].Reason != "not a number" {
+		t.Fatalf("excluded: %+v", r.Excluded)
+	}
+	for _, c := range r.Coef {
+		if math.IsNaN(c) || math.IsInf(c, 0) {
+			t.Fatal("NaN leaked into the combination")
 		}
 	}
 }

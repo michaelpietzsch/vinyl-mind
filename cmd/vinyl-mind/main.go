@@ -139,7 +139,10 @@ type app struct {
 	log   *slog.Logger
 }
 
-func open(cfg config.Config) (*app, error) {
+// open prepares the data directory, the server key and the database. Every command but backup brings the
+// database to this version's schema; a backup copies it as it is, so that a copy made with a newer server does
+// not take the way back to the older one.
+func open(cfg config.Config, migrate bool) (*app, error) {
 	if err := os.MkdirAll(cfg.DataDir, 0o700); err != nil {
 		return nil, err
 	}
@@ -151,7 +154,12 @@ func open(cfg config.Config) (*app, error) {
 	if err != nil {
 		return nil, err
 	}
-	st, err := store.Open(cfg.DBURL())
+	var st *store.Store
+	if migrate {
+		st, err = store.Open(cfg.DBURL())
+	} else {
+		st, err = store.OpenAsIs(cfg.DBURL())
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -183,7 +191,7 @@ func run(cfg config.Config, cmd string, args []string) error {
 		fmt.Fprint(os.Stderr, usage)
 		return fmt.Errorf("unknown command %q", cmd)
 	}
-	a, err := open(cfg)
+	a, err := open(cfg, cmd != "backup")
 	if err != nil {
 		return err
 	}
@@ -480,6 +488,34 @@ func run(cfg config.Config, cmd string, args []string) error {
 	return nil
 }
 
+// warnAboutAnchors says at start what the operator may not notice otherwise: without an anchor nothing is
+// combined, and without an anchor that does not contribute nothing is published automatically.
+func (a *app) warnAboutAnchors() {
+	stations, err := a.store.Stations()
+	if err != nil {
+		a.log.Error("stations", "err", err)
+		return
+	}
+	anchors, voters := 0, 0
+	for _, st := range stations {
+		if st.Status == store.Active && st.TrustOperator && st.Trust >= a.cfg.Aggregation.NewcomerTrust {
+			anchors++
+			if st.Profiles == 0 {
+				voters++
+			}
+		}
+	}
+	switch {
+	case anchors == 0:
+		a.log.Warn("no anchor: nothing will be combined until the operator trusts a station (vinyl-mind trust <fp> 1)")
+	case voters == 0 && a.cfg.Publication.Auto:
+		a.log.Warn("every anchor contributes: no candidate can be published automatically until an anchor that does "+
+			"not contribute (and has its own account) checks and reports", "anchors", anchors)
+	default:
+		a.log.Info("anchors", "anchors", anchors, "not_contributing", voters)
+	}
+}
+
 // event records an operator's command in the event log next to the server's own events.
 func (a *app) event(now time.Time, action, subject, detail string) {
 	if err := a.store.AddEvent(store.Event{T: now, Actor: "cli", Action: action, Subject: subject,
@@ -560,6 +596,40 @@ func (a *app) status(w io.Writer, prom bool, now time.Time) error {
 		add("vinyl_mind_refusals_24h", "Requests refused in the last 24 hours by status and error code.",
 			fmt.Sprintf(`status=%q,code=%q`, status, code), float64(refusals[k]))
 	}
+	// The anchors: how many, how many could vote on something, and how fresh their contributions are
+	anchors, voters, oldest := 0, 0, 0.0
+	for _, st := range stations {
+		if st.Status != store.Active || !st.TrustOperator || st.Trust < a.cfg.Aggregation.NewcomerTrust {
+			continue
+		}
+		anchors++
+		if st.Profiles == 0 {
+			voters++
+		} else if st.LastContrib != nil {
+			oldest = math.Max(oldest, now.Sub(*st.LastContrib).Seconds())
+		}
+	}
+	add("vinyl_mind_anchors", "Active stations the operator trusts at the full level.", "", float64(anchors))
+	add("vinyl_mind_anchors_not_contributing", "Anchors without contributions: the ones that can vote on any candidate.",
+		"", float64(voters))
+	add("vinyl_mind_anchor_contribution_age_seconds", "Age of the oldest anchor contribution.", "", oldest)
+	// What the last combination found per group
+	var states []hub.GroupState
+	if raw, _ := a.store.Meta("last_combine"); raw != "" {
+		_ = json.Unmarshal([]byte(raw), &states)
+	}
+	byState := map[string]int{}
+	far := 0
+	for _, g := range states {
+		byState[g.State]++
+		far += g.Far
+	}
+	for _, state := range []string{"model", "no_anchor", "anchors_disagree", "no_voter", "too_few"} {
+		add("vinyl_mind_groups", "Groups by what the last combination found (no_voter: a model nobody can publish).",
+			fmt.Sprintf(`state=%q`, state), float64(byState[state]))
+	}
+	add("vinyl_mind_far_stations", "Stations far from the reference in the last combination (all groups).", "",
+		float64(far))
 	seen := map[string]bool{}
 	for _, m := range ms {
 		if prom {
@@ -751,6 +821,7 @@ func (a *app) serve() error {
 	a.log.Info("publication", "auto", p.Auto, "review_hours", p.ReviewHours, "min_reports", p.MinReports,
 		"min_report_stations", p.MinReportStations, "min_vote_age_days", p.MinVoteAgeDays,
 		"trust_auto_max", a.cfg.Aggregation.TrustAutoMax)
+	a.warnAboutAnchors()
 	select {
 	case err := <-errc:
 		return err

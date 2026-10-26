@@ -27,6 +27,10 @@ var (
 // starts with the trust it had, not with a clean slate.
 const FormerDays = 30
 
+// MaxReturnsPerDay is how often a key may come back after leaving within a day. Coming back is not a new station
+// (trust and age stay), so it does not count against JoinsPerDay; this keeps a key from churning instead.
+const MaxReturnsPerDay = 5
+
 // InvitationCheck decides, before an invitation is used up, whether this join may use it, and returns the account
 // the station is to belong to (empty for none). An error leaves the invitation untouched.
 type InvitationCheck func(invitationID int64, bound bool) (account string, err error)
@@ -243,11 +247,19 @@ func (s *Store) Join(fp, publicKey string, code *string, allowPending bool, trus
 		joined := ms(now)
 		// What a key or account left with, it comes back with
 		var formerTrust float64
-		var formerJoined int64
-		err = tx.QueryRow(s.q("SELECT trust, joined_at FROM former_stations WHERE key_fp = ?"), fp).Scan(&formerTrust,
-			&formerJoined)
+		var formerJoined, returns int64
+		var returnsSince sql.NullInt64
+		err = tx.QueryRow(s.q("SELECT trust, joined_at, returns, returns_since FROM former_stations WHERE key_fp = ?"),
+			fp).Scan(&formerTrust, &formerJoined, &returns, &returnsSince)
 		if err == nil {
 			trust, joined = math.Min(trust, formerTrust), formerJoined
+			if !returnsSince.Valid || now.Sub(time.UnixMilli(returnsSince.Int64)) >= 24*time.Hour {
+				returns, returnsSince = 0, sql.NullInt64{Int64: ms(now), Valid: true}
+			}
+			returns++
+			if returns > MaxReturnsPerDay {
+				return ErrJoinLimit
+			}
 		} else if !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
@@ -262,8 +274,8 @@ func (s *Store) Join(fp, publicKey string, code *string, allowPending bool, trus
 			}
 		}
 		if _, err := tx.Exec(s.q(`INSERT INTO stations (key_fp, public_key, status, trust, invitation_id, joined_at,
-			approved_at, account) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`), fp, publicKey, status, trust, invID, joined,
-			approved, accountVal); err != nil {
+			approved_at, account, returns, returns_since) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`), fp, publicKey,
+			status, trust, invID, joined, approved, accountVal, returns, returnsSince); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(s.q("DELETE FROM former_stations WHERE key_fp = ?"), fp); err != nil {
@@ -357,10 +369,17 @@ func (s *Store) Leave(st *Station, now time.Time) error {
 		if st.Account != "" {
 			account = st.Account
 		}
-		if _, err := tx.Exec(s.q(`INSERT INTO former_stations (key_fp, account, trust, joined_at, left_at)
-			VALUES (?, ?, ?, ?, ?) ON CONFLICT (key_fp) DO UPDATE SET account = excluded.account,
-			trust = excluded.trust, joined_at = excluded.joined_at, left_at = excluded.left_at`), st.KeyFP, account,
-			st.Trust, ms(st.JoinedAt), ms(now)); err != nil {
+		var returns int64
+		var returnsSince sql.NullInt64
+		if err := tx.QueryRow(s.q("SELECT returns, returns_since FROM stations WHERE id = ?"), st.ID).Scan(&returns,
+			&returnsSince); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(s.q(`INSERT INTO former_stations (key_fp, account, trust, joined_at, left_at, returns,
+			returns_since) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (key_fp) DO UPDATE SET account = excluded.account,
+			trust = excluded.trust, joined_at = excluded.joined_at, left_at = excluded.left_at,
+			returns = excluded.returns, returns_since = excluded.returns_since`), st.KeyFP, account, st.Trust,
+			ms(st.JoinedAt), ms(now), returns, returnsSince); err != nil {
 			return err
 		}
 		_, err := tx.Exec(s.q("DELETE FROM stations WHERE id = ?"), st.ID)

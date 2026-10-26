@@ -19,6 +19,7 @@ func main() {
 	flag.IntVar(&p.Recordings, "recordings", p.Recordings, "recordings with a master per honest profile")
 	flag.IntVar(&p.Events, "events", p.Events, "detections per recording")
 	flag.IntVar(&p.Anchors, "anchors", p.Anchors, "honest stations the operator trusts")
+	flag.IntVar(&p.BadAnchors, "bad-anchors", p.BadAnchors, "anchors that turned and send the attackers' model")
 	flag.IntVar(&p.Attackers, "attackers", p.Attackers, "stations sending a reversed model with inflated claims")
 	flag.Float64Var(&p.AttackerTrust, "attacker-trust", p.AttackerTrust, "the attackers' trust (0.9: the automatic maximum)")
 	flag.Float64Var(&p.NoGC, "no-gc", p.NoGC, "share of the honest stations without a second opinion")

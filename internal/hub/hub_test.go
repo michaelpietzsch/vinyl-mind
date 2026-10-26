@@ -597,3 +597,115 @@ func TestLeaveAndRejoinKeepsTrust(t *testing.T) {
 		t.Fatalf("stations that left still count as joins of the day: %d", n)
 	}
 }
+
+// The second review's B2-2: a group that cannot be served says so once, in the log and the event log, and the
+// summary of the last combination carries it for the overview.
+func TestGroupStatesAreReported(t *testing.T) {
+	f := newFixture(t)
+	f.operator, f.trust = false, 0.25
+	for _, s := range []string{"a", "b", "c"} {
+		f.contribute(s, "p1", "1", "usb_turntable.mm", 1)
+	}
+	f.combine(t0)
+	f.combine(t0.Add(time.Hour))
+	events, _ := f.st.Events(20)
+	noAnchor := 0
+	for _, e := range events {
+		if e.Action == "group_no_anchor" {
+			noAnchor++
+		}
+	}
+	if noAnchor != 1 {
+		t.Fatalf("one event for the state, not one per run: %d", noAnchor)
+	}
+	raw, _ := f.st.Meta("last_combine")
+	var states []GroupState
+	if json.Unmarshal([]byte(raw), &states) != nil || len(states) != 1 || states[0].State != "no_anchor" {
+		t.Fatalf("summary: %s", raw)
+	}
+	// An anchor that contributes makes the model, but nobody can publish it: every anchor contributed
+	f.operator, f.trust = true, 1
+	f.contribute("anchor", "p1", "1", "usb_turntable.mm", 1)
+	f.combine(t0.Add(2 * time.Hour))
+	raw, _ = f.st.Meta("last_combine")
+	_ = json.Unmarshal([]byte(raw), &states)
+	if states[0].State != "no_voter" || states[0].Version == 0 || states[0].Voters != 0 {
+		t.Fatalf("summary after the anchor joined: %+v", states[0])
+	}
+	// A second anchor that only checks can vote
+	f.station("voter")
+	f.combine(t0.Add(3 * time.Hour))
+	raw, _ = f.st.Meta("last_combine")
+	_ = json.Unmarshal([]byte(raw), &states)
+	if states[0].State != "model" || states[0].Voters != 1 {
+		t.Fatalf("summary with a voter: %+v", states[0])
+	}
+}
+
+// B2-3 and B2-5: a withdrawn candidate is not built again from the same inputs, and a result within tolerance
+// of the published model builds no candidate either.
+func TestNoChurnAroundDecidedModels(t *testing.T) {
+	f := newFixture(t)
+	for _, s := range []string{"a", "b", "c"} {
+		f.contribute(s, "p1", "1", "usb_turntable.mm", 1)
+	}
+	v := outcome(f.combine(t0), "1", spec.ClassAll).Version
+	if _, err := f.hub.Withdraw(v, "test", t0); err != nil {
+		t.Fatal(err)
+	}
+	if o := outcome(f.combine(t0.Add(time.Hour)), "1", spec.ClassAll); o.Version != 0 {
+		t.Fatalf("a withdrawn candidate was built again: %+v", o)
+	}
+	f.contribute("c", "p1", "1", "usb_turntable.mm", 1.5)
+	v2 := outcome(f.combine(reviewed), "1", spec.ClassAll).Version
+	if v2 == 0 {
+		t.Fatal("changed inputs make a new candidate")
+	}
+	if _, err := f.hub.Publish(v2, reviewed); err != nil {
+		t.Fatal(err)
+	}
+	f.contribute("c", "p1", "1", "usb_turntable.mm", 1.501)
+	if o := outcome(f.combine(reviewed.Add(49*time.Hour)), "1", spec.ClassAll); o.Version != 0 ||
+		!strings.Contains(o.Skipped, "published model") {
+		t.Fatalf("a nudge within tolerance of the published model: %+v", o)
+	}
+}
+
+// B2-7 and B2-9: a report earns trust only for a station whose contribution went into the last combination, and
+// an anchor far from the others is reported once a day.
+func TestReportGainsNeedAContributionAndAnchorFarIsRateLimited(t *testing.T) {
+	f := newFixture(t)
+	for _, s := range []string{"a", "b", "c"} {
+		f.contribute(s, "p1", "1", "usb_turntable.mm", 1)
+	}
+	v := outcome(f.combine(t0), "1", spec.ClassAll).Version
+	f.operator, f.trust = false, 0.25
+	f.station("idle") // reports, never contributed
+	f.now = reviewed
+	report(f, "idle", "p1", v, 0.1)
+	f.operator, f.trust = true, 1
+	for _, s := range []string{"v1", "v2"} {
+		report(f, s, "p1", v, 0.1)
+	}
+	if status(f, v) != store.Published || !near(f.trustOf("idle"), 0.25) {
+		t.Fatalf("a station without contributions earns nothing by voting: %s %g", status(f, v), f.trustOf("idle"))
+	}
+	// Three anchors, one of them far, combined hourly: one anchor_far event per day
+	f.contribute("bad", "p1", "1", "usb_turntable.mm", 50)
+	for h := 0; h < 5; h++ {
+		f.combine(reviewed.Add(time.Duration(h) * time.Hour))
+	}
+	events, _ := f.st.Events(100)
+	n := 0
+	for _, e := range events {
+		if e.Action == "anchor_far" {
+			n++
+			if !strings.Contains(e.Detail, "coefficients") {
+				t.Fatalf("anchor_far without the distance: %q", e.Detail)
+			}
+		}
+	}
+	if n != 1 || !near(f.trustOf("bad"), 1) {
+		t.Fatalf("%d anchor_far events in five hourly runs, trust %g", n, f.trustOf("bad"))
+	}
+}

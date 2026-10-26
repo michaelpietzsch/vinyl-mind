@@ -31,6 +31,7 @@ type Model struct {
 	Status       string
 	ResultHash   string // identifies the combination (coefficients, spread, counts) and the settings behind it
 	Contributors string // JSON: the stations and accounts whose contributions went in (column contributors)
+	StateRev     int64  // grows with every status change: the sequence number of the signed status
 	Payload      string
 	JWS          string
 	CreatedAt    time.Time
@@ -40,7 +41,7 @@ type Model struct {
 }
 
 const modelCols = `version, feature_version, detector_version, chain_class, status, inputs_hash, contributors,
-	payload, jws, created_at, published_at, withdrawn_at, reason`
+	payload, jws, created_at, published_at, withdrawn_at, reason, state_rev`
 
 func scanModel(r scanner) (*Model, error) {
 	var m Model
@@ -48,7 +49,7 @@ func scanModel(r scanner) (*Model, error) {
 	var pub, wd sql.NullInt64
 	var reason, contributors sql.NullString
 	if err := r.Scan(&m.Version, &m.Group.FeatureVersion, &m.Group.DetectorVersion, &m.Group.ChainClass, &m.Status,
-		&m.ResultHash, &contributors, &m.Payload, &m.JWS, &created, &pub, &wd, &reason); err != nil {
+		&m.ResultHash, &contributors, &m.Payload, &m.JWS, &created, &pub, &wd, &reason, &m.StateRev); err != nil {
 		return nil, err
 	}
 	m.CreatedAt, m.PublishedAt, m.WithdrawnAt = time.UnixMilli(created), fromMS(pub), fromMS(wd)
@@ -69,7 +70,7 @@ func (s *Store) AddModel(g Group, resultHash, contributors string, build func(ve
 		if err != nil {
 			return err
 		}
-		if _, err := tx.Exec(s.q(`UPDATE models SET status = ?, withdrawn_at = ?, reason = ?
+		if _, err := tx.Exec(s.q(`UPDATE models SET status = ?, withdrawn_at = ?, reason = ?, state_rev = state_rev + 1
 			WHERE feature_version = ? AND detector_version = ? AND chain_class = ? AND status = ?`),
 			Withdrawn, ms(now), "superseded", g.FeatureVersion, g.DetectorVersion, g.ChainClass,
 			Candidate); err != nil {
@@ -129,19 +130,15 @@ func (s *Store) Latest(g Group, status string) (*Model, error) {
 	return &ms[0], nil
 }
 
-// LatestResultHash is the result hash of the newest candidate or published model of a group: if a new
-// combination has the same hash, there is nothing new to store.
+// LatestResultHash is the result hash of the newest model of a group, whatever its status: if a new combination
+// has the same hash, there is nothing new to store, and a candidate the anchors withdrew is not built again from
+// the same inputs.
 func (s *Store) LatestResultHash(g Group) (string, error) {
 	ms, err := s.Models(&g, "")
-	if err != nil {
+	if err != nil || len(ms) == 0 {
 		return "", err
 	}
-	for _, m := range ms {
-		if m.Status == Candidate || m.Status == Published {
-			return m.ResultHash, nil
-		}
-	}
-	return "", nil
+	return ms[0].ResultHash, nil
 }
 
 // Published is the model stations are to use: the one published last, if it is still published. A withdrawn
@@ -171,8 +168,8 @@ func (s *Store) SetModelStatus(version int64, status, reason string, now time.Ti
 	if status == Published {
 		col = "published_at"
 	}
-	r, err := s.db.Exec(s.q("UPDATE models SET status = ?, reason = ?, "+col+" = ? WHERE version = ?"), status,
-		sql.NullString{String: reason, Valid: reason != ""}, ms(now), version)
+	r, err := s.db.Exec(s.q("UPDATE models SET status = ?, reason = ?, "+col+" = ?, state_rev = state_rev + 1 WHERE version = ?"),
+		status, sql.NullString{String: reason, Valid: reason != ""}, ms(now), version)
 	return affected(r, err)
 }
 
@@ -301,16 +298,28 @@ const MaxAccessLog = 500_000
 
 // LogAccess appends to the access log.
 func (s *Store) LogAccess(e AccessEntry) error {
-	if len(e.Path) > 200 {
-		e.Path = e.Path[:200]
-	}
-	if e.N < 1 {
-		e.N = 1
-	}
-	_, err := s.db.Exec(s.q(`INSERT INTO access_log (t, address, key_fp, method, path, status, code, n)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`), ms(e.T), e.Address, sql.NullString{String: e.KeyFP, Valid: e.KeyFP != ""},
-		e.Method, e.Path, e.Status, sql.NullString{String: e.Code, Valid: e.Code != ""}, e.N)
-	return err
+	return s.LogAccesses([]AccessEntry{e})
+}
+
+// LogAccesses appends several entries in one transaction.
+func (s *Store) LogAccesses(entries []AccessEntry) error {
+	return s.tx(func(tx *sql.Tx) error {
+		for _, e := range entries {
+			if len(e.Path) > 200 {
+				e.Path = e.Path[:200]
+			}
+			if e.N < 1 {
+				e.N = 1
+			}
+			if _, err := tx.Exec(s.q(`INSERT INTO access_log (t, address, key_fp, method, path, status, code, n)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?)`), ms(e.T), e.Address,
+				sql.NullString{String: e.KeyFP, Valid: e.KeyFP != ""}, e.Method, e.Path, e.Status,
+				sql.NullString{String: e.Code, Valid: e.Code != ""}, e.N); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 // AccessLog returns the newest entries.
@@ -381,6 +390,13 @@ func (s *Store) Prune(now time.Time, accessLogDays int) error {
 		MaxAccessLog); err != nil {
 		return err
 	}
-	_, err := s.db.Exec(s.q("DELETE FROM former_stations WHERE left_at < ?"), ms(now.Add(-FormerDays*24*time.Hour)))
+	if _, err := s.db.Exec(s.q("DELETE FROM former_stations WHERE left_at < ?"),
+		ms(now.Add(-FormerDays*24*time.Hour))); err != nil {
+		return err
+	}
+	_, err := s.db.Exec(s.q("DELETE FROM events WHERE t < ?"), ms(now.Add(-EventDays*24*time.Hour)))
 	return err
 }
+
+// EventDays is how long the event log is kept.
+const EventDays = 365

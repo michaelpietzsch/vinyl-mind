@@ -180,11 +180,12 @@ func (s *Server) accessLog(next http.Handler) http.Handler {
 			address = ri.addr.String()
 		}
 		// The query is left out: it says nothing about abuse and only adds data. The path is kept as it came
-		// over the wire, so that no byte in it can pretend to be another line in a terminal.
+		// over the wire, so that no byte in it can pretend to be another line in a terminal. Requests without a
+		// verified key are counted, not listed: nobody without a key can make the server write a line.
 		e := store.AccessEntry{T: s.now(), Address: address, KeyFP: ri.keyFP, Method: r.Method,
 			Path: r.URL.EscapedPath(), Status: sw.status, Code: sw.code}
-		if ri.keyFP == "" && (sw.status == http.StatusTooManyRequests || sw.status == http.StatusNotFound) {
-			s.countRefused(e)
+		if ri.keyFP == "" {
+			s.countRefused(e, limitKey(ri.addr))
 			return
 		}
 		if err := s.store.LogAccess(e); err != nil {
@@ -193,40 +194,51 @@ func (s *Server) accessLog(next http.Handler) http.Handler {
 	})
 }
 
-// countRefused remembers a refused request of an unknown sender; Flush writes the counts. Nobody without a key
-// can make the server write a line per request.
-func (s *Server) countRefused(e store.AccessEntry) {
+// countRefused remembers a request of an unknown sender; Flush writes the counts, one line per address (an
+// IPv6 /64 counts as one) and answer. When the table is full, it is handed to a writer in the background: no
+// request waits for the database because of it.
+func (s *Server) countRefused(e store.AccessEntry, key string) {
 	s.refusedMu.Lock()
 	defer s.refusedMu.Unlock()
-	k := e.Address + "|" + strconv.Itoa(e.Status) + "|" + e.Code
+	k := key + "|" + strconv.Itoa(e.Status) + "|" + e.Code
 	c := s.refused[k]
 	if c == nil {
 		if len(s.refused) >= maxRefused {
-			s.flushLocked()
+			go s.write(s.takeLocked())
 		}
-		e.Method, e.Path = "*", "*"
+		e.Address, e.Method, e.Path = key, "*", "*"
 		c = &refused{entry: e}
 		s.refused[k] = c
 	}
 	c.n++
 }
 
-// Flush writes the counts of refused requests to the access log, one line per address and answer, with the time
-// of the first of them. The server calls it regularly and when it shuts down.
+// Flush writes the counts of requests without a verified key to the access log. The server calls it regularly
+// and when it shuts down.
 func (s *Server) Flush() {
 	s.refusedMu.Lock()
-	defer s.refusedMu.Unlock()
-	s.flushLocked()
+	entries := s.takeLocked()
+	s.refusedMu.Unlock()
+	s.write(entries)
 }
 
-func (s *Server) flushLocked() {
+func (s *Server) takeLocked() []store.AccessEntry {
+	entries := make([]store.AccessEntry, 0, len(s.refused))
 	for k, c := range s.refused {
 		e := c.entry
 		e.N = c.n
-		if err := s.store.LogAccess(e); err != nil {
-			s.log.Error("access log", "err", err)
-		}
+		entries = append(entries, e)
 		delete(s.refused, k)
+	}
+	return entries
+}
+
+func (s *Server) write(entries []store.AccessEntry) {
+	if len(entries) == 0 {
+		return
+	}
+	if err := s.store.LogAccesses(entries); err != nil {
+		s.log.Error("access log", "err", err)
 	}
 }
 
@@ -257,7 +269,11 @@ func (s *Server) clientAddr(r *http.Request) (netip.Addr, error) {
 	if !s.cfg.TrustedProxy(peer) {
 		return peer, nil
 	}
-	hops := strings.Split(strings.Join(r.Header.Values("X-Forwarded-For"), ","), ",")
+	forwarded := strings.Join(r.Header.Values("X-Forwarded-For"), ",")
+	if strings.TrimSpace(forwarded) == "" {
+		return peer, nil // the proxy's own request, such as a health check
+	}
+	hops := strings.Split(forwarded, ",")
 	for i := len(hops) - 1; i >= 0; i-- {
 		a, err := netip.ParseAddr(strings.TrimSpace(hops[i]))
 		if err != nil {

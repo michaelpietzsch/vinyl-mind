@@ -78,13 +78,19 @@ func TestRefusedRequestsAreCounted(t *testing.T) {
 	if len(entries) != 2 || sum != 40 {
 		t.Fatalf("after the flush: %d rows for %d requests: %+v", len(entries), sum, entries)
 	}
-	// Signed requests are still listed one by one
+	// Signed requests are still listed one by one; a successful request without a key (GET /v1/server) is counted
 	e.srv.perAddress = ratelimit.New(1000, time.Minute)
 	s := e.active()
 	do(t, s, "GET", "/v1/me", nil, 200)
 	entries, _ = e.store.AccessLog(1)
 	if entries[0].KeyFP == "" || entries[0].N != 1 {
 		t.Fatalf("a station's request: %+v", entries[0])
+	}
+	before, _ = e.store.Count("access_log")
+	resp, _ := http.Get(e.http.URL + "/v1/server")
+	resp.Body.Close()
+	if n, _ := e.store.Count("access_log"); n != before {
+		t.Fatal("a request without a key is counted, not listed")
 	}
 }
 
@@ -288,5 +294,25 @@ func TestModelStateIsSigned(t *testing.T) {
 	pub := e.srv.key.Public().(ed25519.PublicKey)
 	if !ed25519.Verify(pub, []byte(parts[0]+"."+parts[1]), sig) {
 		t.Fatal("the state is not signed with the server key")
+	}
+}
+
+// The second review's A2-4: the proxy's own requests carry no X-Forwarded-For; and A2-2: counts are kept per
+// IPv6 /64, so a flood from one subscriber is one line.
+func TestRefusedCountsPerSubscriber(t *testing.T) {
+	e := newEnv(t, func(c *config.Config) { c.TrustedProxies = []string{"127.0.0.1"} })
+	for i := 0; i < 50; i++ {
+		req, _ := http.NewRequest("GET", e.http.URL+"/nowhere", nil)
+		req.Header.Set("X-Forwarded-For", fmt.Sprintf("2001:db8:5:6::%x", i+1))
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+	}
+	e.srv.Flush()
+	entries, _ := e.store.AccessLog(5)
+	if len(entries) != 1 || entries[0].N != 50 || entries[0].Address != "2001:db8:5:6::/64" {
+		t.Fatalf("fifty addresses of one /64: %+v", entries)
 	}
 }

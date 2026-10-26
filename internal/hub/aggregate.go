@@ -32,7 +32,9 @@ type Used struct {
 	Quality  float64   // 1 at a perfect self-check, 0 at the limit MaxEstError
 	Share    float64   // final share in the combination; the shares add up to 1
 	Far      bool      // outside the band on at least farCount of the coefficients the profile learned
+	Outside  int       // learned coefficients outside the band
 	Clipped  int       // coefficients pulled into the band
+	MaxDist  float64   // the largest distance to the reference, in bands
 }
 
 // farCount is how many learned coefficients outside the band make a contribution far from the reference: one
@@ -60,6 +62,7 @@ type Result struct {
 	Used      []Used
 	Excluded  []Excluded
 	Reason    string // why there is no combination
+	Disagree  int    // coefficients on which two anchors differ by more than the band (then there is no model)
 }
 
 // Combine weighs the inputs of one kind and combines them coefficient by coefficient.
@@ -83,6 +86,10 @@ func Combine(in []Input, cfg config.Aggregation, nCoef int) *Result {
 		case k.CVErrEst >= k.CVErrRaw:
 			// The station itself would not use such a model: it does not beat counting every detection
 			res.Excluded = append(res.Excluded, Excluded{x.StationID, x.ProfileID, "estimate not better than raw count"})
+			continue
+		case !finite(k.Coef):
+			// The specification refuses these at the door; a stored one must not break the combination
+			res.Excluded = append(res.Excluded, Excluded{x.StationID, x.ProfileID, "not a number"})
 			continue
 		}
 		// Claimed examples are not proof: beyond MaxEvidence, more claims buy no more weight
@@ -111,9 +118,17 @@ func Combine(in []Input, cfg config.Aggregation, nCoef int) *Result {
 	}
 
 	// The reference is the anchors' position; every other station is held within the band around it. An anchor
-	// is held to the other anchors, if there are any: the only anchor is the reference itself.
+	// is held to the other anchors: to the median of all of them while they are few (a median of three stands one
+	// bad anchor), and to the others alone once at least three of them learned the coefficient. Two anchors have
+	// no majority: if they disagree, there is no reference and no model.
 	var known []bool
 	res.Reference, res.Band, known = reference(res.Used, 0, cfg, nCoef)
+	if res.Anchors == 2 {
+		if res.Disagree = disagreement(res.Used, res.Band, known); res.Disagree >= farCount {
+			res.Reason = fmt.Sprintf("the two anchors disagree on %d coefficients", res.Disagree)
+			return res
+		}
+	}
 	for i := range res.Used {
 		u := &res.Used[i]
 		ref, band, learned := res.Reference, res.Band, known
@@ -202,19 +217,29 @@ func capStationEvidence(used []Used, max float64) {
 	}
 }
 
+// leaveOneOut is how many other anchors must have learned a coefficient before an anchor is held to them alone:
+// fewer than three others have no majority of their own, so the anchor is held to the median of all anchors,
+// which one bad anchor among three cannot move.
+const leaveOneOut = 3
+
 // reference is the anchors' position: per coefficient the median of the means of the anchors that learned it,
-// leaving out the station exclude (0: none). The band around it is ConsistencyK robust spreads wide. With fewer
-// than three such anchors there is no spread to measure, and the floor stands in; with more, the spread is their
-// median absolute deviation, which a minority of them cannot inflate. Where no anchor learned a coefficient, the
-// reference is what the anchors sent for it (the prior they trained towards) and known is false: nobody is held
-// to it, and the combination keeps it as it is.
+// leaving out the station exclude (0: none) where at least leaveOneOut others learned it. The band around it is
+// ConsistencyK robust spreads wide. With fewer than three such anchors there is no spread to measure, and the
+// floor stands in; with more, the spread is their median absolute deviation, which a minority of them cannot
+// inflate. Where no anchor learned a coefficient, the reference is what the anchors sent for it (the prior they
+// trained towards) and known is false: nobody is held to it, and the combination keeps it as it is.
 func reference(used []Used, exclude int64, cfg config.Aggregation, nCoef int) (ref, band []float64, known []bool) {
 	ref, band, known = make([]float64, nCoef), make([]float64, nCoef), make([]bool, nCoef)
 	for j := range ref {
-		col := stationMeans(used, j, func(u Used) bool { return u.Anchor && u.StationID != exclude && u.Kind.Informs(j) })
+		others := func(u Used) bool { return u.Anchor && u.StationID != exclude && u.Kind.Informs(j) }
+		all := func(u Used) bool { return u.Anchor && u.Kind.Informs(j) }
+		col := stationMeans(used, j, others)
+		if exclude != 0 && len(col) < leaveOneOut {
+			col = stationMeans(used, j, all)
+		}
 		known[j] = len(col) > 0
 		if !known[j] {
-			col = stationMeans(used, j, func(u Used) bool { return u.Anchor && u.StationID != exclude })
+			col = stationMeans(used, j, func(u Used) bool { return u.Anchor })
 		}
 		ref[j] = median(col)
 		spread := 0.0
@@ -252,6 +277,44 @@ func stationMeans(used []Used, j int, keep func(Used) bool) []float64 {
 	return out
 }
 
+// disagreement counts the coefficients on which the two anchors differ by more than the band: with two there is
+// no majority, and a reference between two positions that far apart would hold everyone to a place neither of
+// them is at. Only coefficients both learned count.
+func disagreement(used []Used, band []float64, known []bool) int {
+	var a, b int64
+	for _, u := range used {
+		if !u.Anchor {
+			continue
+		}
+		if a == 0 || u.StationID == a {
+			a = u.StationID
+		} else {
+			b = u.StationID
+		}
+	}
+	n := 0
+	for j := range band {
+		if !known[j] {
+			continue
+		}
+		ma := stationMeans(used, j, func(u Used) bool { return u.StationID == a && u.Kind.Informs(j) })
+		mb := stationMeans(used, j, func(u Used) bool { return u.StationID == b && u.Kind.Informs(j) })
+		if len(ma) == 1 && len(mb) == 1 && math.Abs(ma[0]-mb[0]) > band[j] {
+			n++
+		}
+	}
+	return n
+}
+
+func finite(xs []float64) bool {
+	for _, x := range xs {
+		if math.IsNaN(x) || math.IsInf(x, 0) {
+			return false
+		}
+	}
+	return true
+}
+
 func median(xs []float64) float64 {
 	if len(xs) == 0 {
 		return 0
@@ -270,19 +333,25 @@ func median(xs []float64) float64 {
 // never averaged in, so the influence of one contribution is bounded by the band, not by the coefficient bound of
 // the specification. A coefficient no anchor learned (known false) holds nobody.
 func hold(u *Used, ref, band []float64, known []bool) {
-	outside := 0
+	u.Outside, u.Clipped, u.MaxDist = 0, 0, 0
 	for j := range u.Coef {
 		d := u.Kind.Coef[j] - ref[j]
-		if !known[j] || math.Abs(d) <= band[j] {
+		if !known[j] {
 			continue
 		}
 		if u.Kind.Informs(j) {
-			outside++
+			u.MaxDist = math.Max(u.MaxDist, math.Abs(d)/band[j])
+		}
+		if math.Abs(d) <= band[j] {
+			continue
+		}
+		if u.Kind.Informs(j) {
+			u.Outside++
 		}
 		u.Coef[j] = ref[j] + math.Copysign(band[j], d)
 		u.Clipped++
 	}
-	u.Far = outside >= farCount
+	u.Far = u.Outside >= farCount
 }
 
 // weigh gives each input its share in the combination. The anchors share 1 − NewcomerShare among themselves by

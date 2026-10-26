@@ -41,15 +41,21 @@ var migrations = [][]string{
 	{ // 4: trust given by the operator (the reference for everything else), penalties once a day, the stations
 		// behind a model, the error code and count in the access log, stations that left, and the event log
 		"ALTER TABLE stations ADD COLUMN trust_operator INTEGER NOT NULL DEFAULT 0",
-		// Full trust could only come from the operator's command before: keep it as such
-		"UPDATE stations SET trust_operator = 1 WHERE trust >= 1",
+		// Full trust that never grew automatically could only come from the operator's command: keep it as such.
+		// A station that reached it by growing is not promoted; the operator decides (docs/operations.md, Updates).
+		"UPDATE stations SET trust_operator = 1 WHERE trust >= 1 AND trust_gained_at IS NULL",
 		"ALTER TABLE stations ADD COLUMN trust_penalized_at BIGINT",
+		// How often a key came back after leaving, within a day: a station that churns is held to a small limit
+		"ALTER TABLE stations ADD COLUMN returns INTEGER NOT NULL DEFAULT 0",
+		"ALTER TABLE stations ADD COLUMN returns_since BIGINT",
 		"ALTER TABLE models ADD COLUMN contributors TEXT",
+		// Grows with every status change: the sequence number of the hub's signed statement about the model
+		"ALTER TABLE models ADD COLUMN state_rev INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE access_log ADD COLUMN code TEXT",
 		"ALTER TABLE access_log ADD COLUMN n INTEGER NOT NULL DEFAULT 1",
 		`CREATE TABLE IF NOT EXISTS former_stations (
 			key_fp TEXT PRIMARY KEY, account TEXT, trust DOUBLE PRECISION NOT NULL, joined_at BIGINT NOT NULL,
-			left_at BIGINT NOT NULL)`,
+			left_at BIGINT NOT NULL, returns INTEGER NOT NULL DEFAULT 0, returns_since BIGINT)`,
 		`CREATE TABLE IF NOT EXISTS events (
 			id {ID}, t BIGINT NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL, subject TEXT NOT NULL,
 			detail TEXT NOT NULL)`,
@@ -103,7 +109,13 @@ type Store struct {
 
 // Open connects to "sqlite://<path>" or "postgres://…" and creates the tables if needed. Everything after
 // "sqlite://" is the file's path, taken literally: a "?" is part of the name, there are no query parameters.
-func Open(url string) (*Store, error) {
+func Open(url string) (*Store, error) { return open(url, true) }
+
+// OpenAsIs connects without creating or migrating anything, for a backup: a copy made with a newer server must
+// not turn the database into the newer schema on the way.
+func OpenAsIs(url string) (*Store, error) { return open(url, false) }
+
+func open(url string, migrate bool) (*Store, error) {
 	s := &Store{}
 	var err error
 	switch {
@@ -127,9 +139,11 @@ func Open(url string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := s.migrate(); err != nil {
-		s.db.Close()
-		return nil, err
+	if migrate {
+		if err := s.migrate(); err != nil {
+			s.db.Close()
+			return nil, err
+		}
 	}
 	if !s.pg {
 		// The database holds the access log with client addresses: readable by the server's user only. SQLite

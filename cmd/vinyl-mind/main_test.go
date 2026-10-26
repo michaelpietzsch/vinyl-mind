@@ -16,7 +16,7 @@ func TestRevokeInvitationStations(t *testing.T) {
 	cfg := config.Default()
 	cfg.DataDir = t.TempDir()
 	cfg.DatabaseURL = "sqlite://" + filepath.Join(cfg.DataDir, "vm.sqlite")
-	a, err := open(cfg)
+	a, err := open(cfg, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +71,7 @@ func TestBackupKeep(t *testing.T) {
 	cfg := config.Default()
 	cfg.DataDir = t.TempDir()
 	cfg.DatabaseURL = "sqlite://" + filepath.Join(cfg.DataDir, "vm.sqlite")
-	a, err := open(cfg)
+	a, err := open(cfg, true)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -473,3 +473,83 @@ func TestDatabaseSchemaReadsWithoutChanging(t *testing.T) {
 		t.Fatalf("schema %d %v", v, err)
 	}
 }
+
+// The second review's A2-5: a key that leaves and comes back keeps trust and age, but may do so only a few times
+// a day.
+func TestReturnsAreLimited(t *testing.T) {
+	eachDB(t, func(t *testing.T, s *Store) {
+		code := "c"
+		_, _ = s.AddInvitation(code, 100, nil, false, t0)
+		// The first join is no return; MaxReturnsPerDay returns are fine, the next one is refused
+		for i := 0; i <= MaxReturnsPerDay+1; i++ {
+			at := t0.Add(time.Duration(i) * time.Minute)
+			st, err := s.Join("fp-x", "pk-x", &code, true, 0.25, nil, 0, at)
+			if i == MaxReturnsPerDay+1 {
+				if !errors.Is(err, ErrJoinLimit) {
+					t.Fatalf("return %d: %v", i, err)
+				}
+				break
+			}
+			if err != nil {
+				t.Fatalf("return %d: %v", i, err)
+			}
+			if err := s.Leave(st, at.Add(30*time.Second)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := s.Join("fp-x", "pk-x", &code, true, 0.25, nil, 0, t0.Add(25*time.Hour)); err != nil {
+			t.Fatalf("the next day: %v", err)
+		}
+	})
+}
+
+// The second review's A2-1: the migration to schema 4 makes an anchor only of a station whose full trust never
+// grew automatically, that is, one the operator set.
+func TestMigrationPromotesOnlyOperatorTrust(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "vm.sqlite")
+	s, err := OpenAsIs("sqlite://" + path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Build a schema-3 database by hand: the first schema and the migrations up to 3
+	dialect := strings.NewReplacer("{ID}", "INTEGER PRIMARY KEY", "{FLOAT}", "REAL")
+	for _, stmt := range strings.Split(dialect.Replace(schema), ";") {
+		if strings.TrimSpace(stmt) != "" {
+			if _, err := s.db.Exec(stmt); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	for _, m := range migrations[:2] {
+		for _, stmt := range m {
+			if _, err := s.db.Exec(dialect.Replace(stmt)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if _, err := s.db.Exec("INSERT INTO meta (key, value) VALUES ('schema_version', '3')"); err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range []struct {
+		fp     string
+		trust  float64
+		gained any
+	}{{"fp-set", 1, nil}, {"fp-grown", 1, ms(t0)}, {"fp-new", 0.25, nil}} {
+		if _, err := s.db.Exec(`INSERT INTO stations (key_fp, public_key, status, trust, trust_gained_at, joined_at)
+			VALUES (?, ?, 'active', ?, ?, ?)`, row.fp, "pk", row.trust, row.gained, ms(t0)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s.Close()
+	s, err = Open("sqlite://" + path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for fp, want := range map[string]bool{"fp-set": true, "fp-grown": false, "fp-new": false} {
+		st, _ := s.Station(fp)
+		if st == nil || st.TrustOperator != want {
+			t.Errorf("%s: operator %v, want %v", fp, st != nil && st.TrustOperator, want)
+		}
+	}
+}

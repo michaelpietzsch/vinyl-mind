@@ -84,13 +84,17 @@ func (h *Hub) Review(version int64, now time.Time) error {
 		return nil
 	}
 	// Reports that agree with the decision are what a careful station sends; they earn trust like consistent
-	// contributions, for stations that contribute. Disagreeing ones cost nothing, honest stations can differ.
+	// contributions, for stations whose contributions went into the last combination. Disagreeing ones cost
+	// nothing, honest stations can differ.
 	stations, err := h.store.Stations()
 	if err != nil {
 		return err
 	}
+	h.mu.Lock()
+	seen := h.seen
+	h.mu.Unlock()
 	for _, st := range stations {
-		if votes[st.ID] == decided && st.Profiles > 0 {
+		if votes[st.ID] == decided && seen[st.ID] {
 			if err := h.gainTrust(&st, now, "report agreed with the decision"); err != nil {
 				return err
 			}
