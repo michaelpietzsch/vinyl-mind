@@ -578,6 +578,7 @@ func TestEqualCampsHaveNoReference(t *testing.T) {
 
 // The third review's B3-2: when the anchors found far are half of all anchors or more, nobody is demoted; two
 // identical colluders among four would otherwise demote the two honest anchors, whose noise is the only spread.
+// Two camps more than the band apart are no majority either: the coefficients are kept at the published model.
 func TestTieAmongAnchorsDemotesNobody(t *testing.T) {
 	cfg := config.Default().Aggregation
 	in := anchors(2, 1) // 1.05 and 1.10
@@ -587,17 +588,21 @@ func TestTieAmongAnchorsDemotesNobody(t *testing.T) {
 	for i := int64(10); i < 16; i++ {
 		in = append(in, Input{StationID: i, ProfileID: "p", Trust: cfg.TrustAutoMax, Kind: kind(1.1, 50, 2000, 0.06)})
 	}
-	r := Combine(in, cfg, 11)
-	if r.Coef == nil || r.Anchors != 4 {
-		t.Fatalf("a tie: %s, %d anchors", r.Reason, r.Anchors)
+	published := make([]float64, 11)
+	for j := range published {
+		published[j] = 0.9
+	}
+	r := CombineWith(in, cfg, 11, published)
+	if r.Coef == nil || r.Anchors != 4 || r.Disagree != 11 {
+		t.Fatalf("a tie: %s, %d anchors, %d disputed", r.Reason, r.Anchors, r.Disagree)
 	}
 	for _, u := range r.Used {
-		if u.Demoted {
-			t.Fatalf("station %d demoted in a tie", u.StationID)
+		if u.Demoted || (u.Anchor && u.Far) {
+			t.Fatalf("station %d demoted %v far %v in a tie", u.StationID, u.Demoted, u.Far)
 		}
 	}
-	if r.Coef[1] < 1.2 || r.Coef[1] > 1.8 {
-		t.Fatalf("a tie lands between the two camps: %v", r.Coef)
+	if !near(r.Coef[1], 0.9) {
+		t.Fatalf("a tie keeps the published model: %v", r.Coef)
 	}
 	// Three against two is no tie: the two are demoted
 	in = append(in, anchors(1, 1.15)[0])

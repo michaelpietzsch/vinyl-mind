@@ -7,6 +7,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"math"
 	"os"
 
 	"github.com/michaelpietzsch/vinyl-mind/internal/sim"
@@ -42,7 +43,12 @@ func main() {
 	fmt.Printf("  honest stations only                 %6.3f\n", r.DistHonest)
 	fmt.Printf("  with attackers, Vinyl-Mind           %6.3f\n", r.DistAttacked)
 	fmt.Printf("  with attackers, plain weighted mean  %6.3f\n", r.DistNaive)
-	fmt.Printf("  honest, constant features averaged   %6.3f\n\n", r.DistUnmasked)
+	if math.IsNaN(r.DistUnmasked) {
+		fmt.Printf("  honest, constant features averaged   no model: the stations that sent the prior are a camp " +
+			"of their own\n\n")
+	} else {
+		fmt.Printf("  honest, constant features averaged   %6.3f\n\n", r.DistUnmasked)
+	}
 	fmt.Printf("New profile with %d x %d judged detections: estimate error per recording on %d held-out ones\n",
 		p.NewRecordings, p.NewEvents, p.TestRecordings)
 	fmt.Printf("  raw count                            %5.1f %%\n", 100*r.ErrRaw)

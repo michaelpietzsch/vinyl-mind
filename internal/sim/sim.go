@@ -58,7 +58,8 @@ type Report struct {
 	Params Params
 
 	// Distance of the combined coefficients to the truth (mean absolute difference); DistUnmasked combines the
-	// honest contributions as if every weight had been learned everywhere
+	// honest contributions as if every weight had been learned everywhere (NaN when that forms no model: the
+	// stations that sent the prior for a weight are a camp of their own, and neither camp a majority)
 	DistHonest, DistAttacked, DistNaive, DistUnmasked float64
 
 	// Mean relative estimate error per recording on the new profile's held-out recordings
@@ -440,13 +441,15 @@ func Run(p Params) (*Report, error) {
 	rh := hub.Combine(honest, cfg, fv.NCoef())
 	ra := hub.Combine(attacked, cfg, fv.NCoef())
 	ru := hub.Combine(unmasked, cfg, fv.NCoef())
-	if rh.Coef == nil || ra.Coef == nil || ru.Coef == nil {
+	if rh.Coef == nil || ra.Coef == nil {
 		return nil, fmt.Errorf("no combination: %s %s", rh.Reason, ra.Reason)
 	}
 	naiveCoef := naive(attacked, p.ManualWeight)
 	rep := &Report{Params: p, DistHonest: distance(rh.Coef, Truth), DistAttacked: distance(ra.Coef, Truth),
-		DistNaive: distance(naiveCoef, Truth), DistUnmasked: distance(ru.Coef, Truth), Excluded: ra.Excluded,
-		Used: ra.Used}
+		DistNaive: distance(naiveCoef, Truth), DistUnmasked: math.NaN(), Excluded: ra.Excluded, Used: ra.Used}
+	if ru.Coef != nil {
+		rep.DistUnmasked = distance(ru.Coef, Truth)
+	}
 
 	// The new profile: little data of its own, judged on many held-out recordings, and no second opinion, as most
 	pr := newProfile(fv, p, true, rng)

@@ -420,10 +420,11 @@ func (s *Store) SetFar(id int64, at *time.Time) error {
 	return err
 }
 
-// SetOperatorTrust stores the operator's decision. With operator true the trust is the operator's and never
+// SetOperatorTrust stores the operator's decision, and lifts the doubt about the station (far_at): the operator
+// has looked at it. With operator true the trust is the operator's and never
 // changes automatically; false hands the station back to the automatic trust at the given value.
 func (s *Store) SetOperatorTrust(id int64, trust float64, operator bool) error {
-	_, err := s.db.Exec(s.q("UPDATE stations SET trust = ?, trust_operator = ? WHERE id = ?"), trust,
+	_, err := s.db.Exec(s.q("UPDATE stations SET trust = ?, trust_operator = ?, far_at = NULL WHERE id = ?"), trust,
 		boolInt(operator), id)
 	return err
 }

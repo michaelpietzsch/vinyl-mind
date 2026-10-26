@@ -354,16 +354,20 @@ func run(cfg config.Config, cmd string, args []string) error {
 					"profiles": s.Profiles, "joined_at": s.JoinedAt.Unix(), "last_seen_at": unix(s.LastSeenAt),
 					"invitation_id": s.InvitationID, "account": nullable(s.Account),
 					"contributions": s.Contributions, "last_contribution_at": unix(s.LastContrib),
-					"examples": s.Examples, "reports": s.Reports}); err != nil {
+					"examples": s.Examples, "reports": s.Reports, "far_at": unix(s.FarAt)}); err != nil {
 					return err
 				}
 			}
 			return nil
 		}
-		fmt.Fprintln(out, "FINGERPRINT\tSTATUS\tTRUST\tPROFILES\tJOINED\tLAST SEEN")
+		fmt.Fprintln(out, "FINGERPRINT\tSTATUS\tTRUST\tPROFILES\tJOINED\tLAST SEEN\tFAR SINCE")
 		for _, s := range sts {
-			fmt.Fprintf(out, "%s\t%s\t%.2f\t%d\t%s\t%s\n", s.KeyFP, s.Status, s.Trust, s.Profiles,
-				s.JoinedAt.UTC().Format(time.DateTime), when(s.LastSeenAt))
+			far := "-"
+			if s.FarAt != nil {
+				far = when(s.FarAt)
+			}
+			fmt.Fprintf(out, "%s\t%s\t%.2f\t%d\t%s\t%s\t%s\n", s.KeyFP, s.Status, s.Trust, s.Profiles,
+				s.JoinedAt.UTC().Format(time.DateTime), when(s.LastSeenAt), far)
 		}
 	case "approve", "revoke":
 		fp, err := arg(args, 0, "station fingerprint")
@@ -613,9 +617,13 @@ func (a *app) status(w io.Writer, prom bool, now time.Time) error {
 		add("vinyl_mind_refusals_24h", "Requests refused in the last 24 hours by status and error code.",
 			fmt.Sprintf(`status=%q,code=%q`, status, code), float64(refusals[k]))
 	}
-	// The anchors: how many, how many could vote on something, and how fresh their contributions are
-	anchors, voters, oldest := 0, 0, 0.0
+	// The anchors: how many, how many could vote on something, how fresh their contributions are, and how many
+	// stations the last combination found far (anchors among them decide nothing until they are in line again)
+	anchors, voters, oldest, doubted := 0, 0, 0.0, 0
 	for _, st := range stations {
+		if st.Status == store.Active && st.FarAt != nil {
+			doubted++
+		}
 		if st.Status != store.Active || !st.TrustOperator || st.Trust < a.cfg.Aggregation.NewcomerTrust {
 			continue
 		}
@@ -630,6 +638,8 @@ func (a *app) status(w io.Writer, prom bool, now time.Time) error {
 	add("vinyl_mind_anchors_not_contributing", "Anchors without contributions: the ones that can vote on any candidate.",
 		"", float64(voters))
 	add("vinyl_mind_anchor_contribution_age_seconds", "Age of the oldest anchor contribution.", "", oldest)
+	add("vinyl_mind_stations_doubted", "Active stations whose last combination found them far from the reference "+
+		"(far since, in vinyl-mind stations); anchors among them decide nothing.", "", float64(doubted))
 	// What the last combination found per group
 	var states []hub.GroupState
 	if raw, _ := a.store.Meta("last_combine"); raw != "" {
