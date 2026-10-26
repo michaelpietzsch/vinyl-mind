@@ -38,15 +38,17 @@ The findings of the security review of 26 October 2026 (hub protocol and aggrega
   key may return five times a day. Requests without a verified key are all counted (per address, IPv6 per /64),
   written in one
   transaction off the request path. The signed status carries a `seq` that counts status changes.
-- **After the third review round.** A coefficient that exactly two anchors learned (the only two, or two with a
-  second opinion among many) is theirs only while they agree, within √2 bands; otherwise it is kept at the
-  published model or the prior, nobody is held on it, and the operator is told. A dispute between two says
-  nothing about who is far: an anchor is demoted on coefficients that at least half of the other anchors learned,
-  and never when the far anchors are half of all anchors or more. An anchor found far or demoted
-  (`anchor_demoted`, `anchor_far`) decides nothing about publication for a day. Each state of a group is reported
-  at most once a day.
-  `backup` refuses a missing database instead of creating one; the background job finishes its step before the
-  process ends; a stored self-check error that is not a number excludes the contribution.
+- **After the third and fourth review rounds.** A coefficient has a reference only where more than half of all
+  anchors stand behind one position (within the band of their median; two anchors: within √2 bands of each
+  other). A minority defines nothing, be it two with a second opinion among many, colluders among the few that
+  learned a coefficient, or one of two equal camps: the coefficient is kept at the published model or the prior,
+  nobody is held or far on it, and the operator is told. An anchor is demoted on the coefficients every anchor
+  learned, and never when the far anchors are half of all anchors or more. An anchor that the last combination
+  found far (`anchor_demoted`, `anchor_far`; recorded in the database) decides nothing about publication until a
+  combination finds it in line again. Each state of a group is reported at most once a day, a state that is not a
+  model once a day as long as it lasts. `backup` refuses a missing database instead of creating one; the
+  background job finishes its step before the process ends; a stored self-check error that is not a number
+  excludes the contribution.
 - Documentation: the public hub the author runs, and that vinyl-check 1.1.0 implements the station side.
 
 ## 0.1.7 – 2026-10-25
