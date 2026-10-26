@@ -25,10 +25,19 @@ The findings of the security review of 26 October 2026 (hub protocol and aggrega
   a malformed `X-Forwarded-For` is refused (400); the access log keeps the path as sent, with the error code,
   counts refused requests of unknown senders per address instead of listing them, and is capped; nonces are kept
   a day beyond their expiry.
-- **Operator.** `vinyl-mind events` (the event log: joins, departures, trust changes, publications, commands),
-  `vinyl-mind status [-prom]` (counts for a textfile collector), `trust <fp> auto`, the publication settings in the
+- **Operator.** `vinyl-mind events` (the event log: joins, departures, trust changes, publications, group states,
+  commands; kept a year), `vinyl-mind status [-prom]` (counts for a textfile collector, with the anchors and the
+  state of every group), `trust <fp> auto`, the publication settings and a warning about missing anchors in the
   startup log. Bindings may name the hub (`aud`), checked against `[accounts] audience`; `audience_required`
-  refuses bindings that do not, once every account service names the hub.
+  refuses bindings that do not, once every account service names the hub. `backup` never migrates the database.
+- **After the second review round.** Two anchors are a reference only while they agree; an anchor is held to the
+  others alone only once three others learned the coefficient, and one that is far from the other anchors is no
+  anchor in that combination (one bad anchor among two or three cannot pull the good ones, nor define a
+  coefficient only it learned). A group that cannot be served (no anchor, anchors disagree, nobody can publish)
+  is reported once per change. The migration makes anchors only of stations whose full trust the operator set. A
+  key may return five times a day. Requests without a verified key are all counted (per address, IPv6 per /64),
+  written in one
+  transaction off the request path. The signed status carries a `seq` that counts status changes.
 - Documentation: the public hub the author runs, and that vinyl-check 1.1.0 implements the station side.
 
 ## 0.1.7 – 2026-10-25

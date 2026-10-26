@@ -65,14 +65,25 @@ become an anchor by behaving well for a while. The anchors are the reference for
   *informative* below), and the band around it is `consistency_k` (3) robust spreads wide; with fewer than three
   anchors there is no spread to measure and `consistency_floor` (0.25) stands in, with more it is their median
   absolute deviation, which a minority of them cannot inflate. **Every other station's coefficients are pulled
-  into the band** before anything is combined (winsorising), and an anchor is held to the band of the other
-  anchors. What a station claims beyond the band is never averaged in: the influence of one contribution is
-  bounded by the band, not by the ±50 of the specification. A station outside the band on two or more of the
-  coefficients it learned is **far** from the reference.
+  into the band** before anything is combined (winsorising). What a station claims beyond the band is never
+  averaged in: the influence of one contribution is bounded by the band, not by the ±50 of the specification. A
+  station outside the band on two or more of the coefficients it learned is **far** from the reference.
+- **Anchors among themselves.** An anchor is held too: to the median of all anchors while they are few (a median
+  of three stands one bad anchor), and to the other anchors alone once at least three of them learned the
+  coefficient. An anchor that is far from the other anchors on the coefficients they share is **no anchor in
+  that combination**: it is held like a newcomer, and a coefficient only it learned stays the prior instead of
+  its word. Only other anchors can bring that about, never newcomers, and it changes no trust: the operator is
+  told (`anchor_far`, once a day) and decides. **Two anchors have no majority**: as long as they agree within
+  the band they are the reference together; if they disagree on two or more coefficients, there is no reference
+  and no model for that kind, and the operator is told (`anchors_disagree`).
 
-The price: the global model stays close to the anchors' model, and the others add at most a fifth. That is the
-point. Trust earned by consistency alone is cheap to fake (a station can send back the published model), and the
-alternative, letting earned trust define the reference, lets whoever earns it first define it for everyone.
+What this means in numbers: with one anchor the model *is* the anchor's model, since the trimmed mean cuts off the
+others' fifth entirely; from two anchors on, the others move a coefficient by at most a third of the distance
+between the anchors' positions, and never beyond the band. The global model stays close to the anchors' model, and
+the others add at most a fifth. That is the point. Trust earned by consistency alone is cheap to fake (a station
+can send back the published model), and the alternative, letting earned trust define the reference, lets whoever
+earns it first define it for everyone. Trust below the anchor level is therefore shown, logged and earned, but
+weighs nothing in the combination.
 
 ### Trust
 
@@ -87,12 +98,10 @@ Lowering it is the operator's call. Automatic trust:
   full level: that stays the operator's to give;
 - is judged on the model over all chain classes only, so that one contribution is not counted twice, and only
   when that model has an anchor;
-- is kept for a station that leaves: a key or account that comes back within 30 days starts with the trust it
-  had, and the key with its age.
+- is kept for a station that leaves: a key or account that comes back within 30 days starts with the lower of
+  `trust_start` and the trust it had, and the key with its age; a key may come back five times a day.
 
-Every change is logged with its reason (`vinyl-mind events`). The hub combines twice per run: the first pass
-judges and settles the trust, the second builds the candidates, so that a station just caught far from the
-reference does not shape the model it was caught by.
+Every change is logged with its reason (`vinyl-mind events`).
 
 ## Combining
 
@@ -115,11 +124,13 @@ all profiles, which for the others is the prior again: it moves little until eno
 is always learned.
 
 A model is a **candidate** when it is built. A new candidate is only built when the combination itself changed
-since the last model (a hash over the rounded coefficients, spreads and counts, with the aggregation settings), so
-a changed contribution that changes nothing, because it was left out or pulled to the same place, builds nothing.
-A candidate is **under review** for `review_hours` (48): it is not replaced before that, and a new combination that
-differs from it by at most 0.02 on every coefficient keeps it afterwards too, so that the reports already given
-keep their meaning and nobody pushes a candidate out by nudging a contribution every hour. The background job
+since the newest model of the group, whatever its status (a hash over the rounded coefficients, spreads and
+counts, with the aggregation settings), so a changed contribution that changes nothing, because it was left out
+or pulled to the same place, builds nothing, and a candidate the anchors withdrew is not built again from the same
+inputs. A candidate is **under review** for `review_hours` (48): it is not replaced before that, and a new
+combination that differs from it, or from the published model when no candidate is open, by at most 0.02 on every
+coefficient builds nothing either, so that the reports already given keep their meaning and nobody pushes a
+candidate out by nudging a contribution every hour. The background job
 combines every `combine_interval_s` (1 hour); `vinyl-mind combine` does it at once (`-dry-run` shows the result
 without storing anything). Before a model is stored, it is validated against `spec/v1/global-model.schema.json`
 like a station would, and signed with the server key. The model records which stations and accounts are behind it.
@@ -150,10 +161,18 @@ good word is not even a report. It can vote against it.
 
 The review window gives every station that wants to a chance to check a candidate before it is published; the
 first three reports do not decide. A candidate that has reached the age is decided at the next background run,
-not only when a report arrives. **A withdrawal does not bring an older model back**: the published model is the
-one published last, as long as it is still published; after a withdrawal stations fall back to their local models
-until the operator publishes something (`vinyl-mind publish`). Every answer about a model carries the hub's signed
-statement of its status (`state_jws`), so that a status cannot be changed on the way without the server key.
+not only when a report arrives. **This needs an anchor that can vote**: one that did not contribute to the
+candidate and shares no account with one that did. An operator whose every anchor contributes gets candidates
+but no automatic publication, not only at the start but for good; the hub says so at start, in the log and the
+event log when a group's state changes (`group_no_voter`, likewise `group_no_anchor`, `group_anchors_disagree`),
+and in `vinyl-mind status`. The way out is a station of the operator's that only checks: *Contribute* off, *Use
+the global model* on, trusted with `trust … 1`.
+
+**A withdrawal does not bring an older model back**: the published model is the one published last, as long as it
+is still published; after a withdrawal stations fall back to their local models until the operator publishes
+something (`vinyl-mind publish`). Every answer about a model carries the hub's signed statement of its status
+(`state_jws`, with a `seq` that counts the model's status changes), so that a status cannot be changed on the way
+without the server key.
 
 `publication.auto = false` turns the automatic part off; then only `vinyl-mind publish` and `withdraw` change a
 model's status.
@@ -207,6 +226,17 @@ still get nowhere:
 That is the operator's lever: every honest station he marks as an anchor improves the model for everyone, and
 nothing a station does on its own can take an anchor's place. Where the prior did not help, the profile's own model
 happened to be good already; the station's check on its own recordings is there to catch exactly that.
+
+An anchor that turns (`-bad-anchors`) is the worst case, since it is the operator's own word that fails. Held to
+the other anchors it changes little, as long as it is not the majority:
+
+| anchors | of them turned | distance to the truth |
+|---|---|---|
+| 2 | 1 | no model: the two disagree, the operator is told |
+| 3 | 1 | 0.185 (honest 0.203) |
+| 4 | 1 | 0.173 (honest 0.176) |
+| 8 | 1 | 0.086 (honest 0.060) |
+| 8 | 2 | 0.086 |
 
 Two findings from the simulation shape the station side (`docs/station-side.md`):
 

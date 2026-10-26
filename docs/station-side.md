@@ -138,7 +138,8 @@ bytes anyway.
 6. Never adopt a candidate, only a published model, and never a model with a smaller version than the one adopted
    last for the group unless the hub says so in a `state_jws` it signed: every entry carries this signed statement
    of its status (`docs/api.md`), and a station that keeps it with the model can tell a status it was given from
-   one that was changed on the way.
+   one that was changed on the way. Its `seq` grows with every status change of the model: accept a statement about
+   a model only if its `seq` is greater than the last one seen for that model, whatever the clocks say.
 
 ## Privacy on the station
 

@@ -146,6 +146,13 @@ the key file. Rotating the key is not supported yet (see the open points in the 
 
 ## Updates
 
+Before an update, back up with the running version (`vinyl-mind backup`, as in the example deploy); the new
+version brings the database to its schema at the first start, and the old version then refuses to start. `backup`
+itself never migrates. After an update to 0.1.8 or later, look at `vinyl-mind stations`: the stations the operator
+set to full trust before are anchors now; a station whose trust had grown to 1 by itself is not, and the operator
+decides with `trust … 1`. Without an anchor nothing is combined, and without an anchor that does not contribute
+nothing is published automatically (`vinyl-mind status`, the startup log).
+
 Replace the image and restart. The database records its schema version; a server older than the database refuses
 to start rather than damaging it. Stations keep working while the server is down: they retry later and keep using
 their local models.

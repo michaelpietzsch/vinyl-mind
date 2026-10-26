@@ -94,7 +94,8 @@ refused (`400 bad_key`).
 | 429 | `rate_limited` | too many joins from this address (`Retry-After`) |
 | 429 | `join_limit` | the server admits no more new stations today (`Retry-After`); counted inside the join, so that parallel joins cannot slip past it |
 
-A key or account that left within 30 days comes back with the trust it had, and the key with its age.
+A key or account that left within 30 days comes back with the lower of `trust_start` and the trust it had, and
+the key with its age; a key may come back five times a day, then `join_limit`.
 
 ### `GET /v1/me`
 
@@ -151,8 +152,9 @@ so a station can poll often at no cost.
 The model itself is the JWS in `jws` (see `spec/signing.md`). A station verifies it with the accepted server key
 before it parses the payload, and checks the payload against `spec/v1/global-model.schema.json`. `state_jws` is
 the hub's signed statement about the entry (`typ` `vinyl-mind-state+json`, payload `spec`
-`vinyl-mind/model-state`, `server`, `version`, `status`, `published_at`, `withdrawn_at`, `at`), so that a
-station can keep a status it was told with proof of who told it; verifying it is optional.
+`vinyl-mind/model-state`, `server`, `version`, `status`, `published_at`, `withdrawn_at`, `seq`, `at`), so that a
+station can keep a status it was told with proof of who told it; verifying it is optional. `seq` counts the
+model's status changes: a statement with a smaller `seq` than one seen before is older, whatever `at` says.
 
 ### `GET /v1/models/{version}`
 
