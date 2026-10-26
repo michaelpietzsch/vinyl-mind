@@ -45,6 +45,7 @@ type Station struct {
 	TrustOperator bool       // the trust was set by the operator; it never changes automatically
 	TrustGainedAt *time.Time // last automatic gain
 	TrustPenalty  *time.Time // last automatic penalty
+	FarAt         *time.Time // the last combination that used the station found it far; nil: in line, or never used
 	InvitationID  *int64
 	JoinedAt      time.Time
 	ApprovedAt    *time.Time
@@ -113,7 +114,7 @@ func (s *Store) RevokeInvitation(id int64) (bool, error) {
 }
 
 const stationCols = `s.id, s.key_fp, s.public_key, s.status, s.trust, s.trust_gained_at, s.invitation_id,
-	s.joined_at, s.approved_at, s.last_seen_at, s.trust_operator, s.trust_penalized_at,
+	s.joined_at, s.approved_at, s.last_seen_at, s.trust_operator, s.trust_penalized_at, s.far_at,
 	(SELECT COUNT(*) FROM contributions c WHERE c.station_id = s.id), s.account, s.contributions_total,
 	s.last_contribution_at,
 	(SELECT COALESCE(SUM(k.n_real + k.n_false), 0) FROM contribution_kinds k
@@ -124,16 +125,17 @@ type scanner interface{ Scan(...any) error }
 
 func scanStation(r scanner) (*Station, error) {
 	var st Station
-	var gained, approved, seen, inv, penalized sql.NullInt64
+	var gained, approved, seen, inv, penalized, farAt sql.NullInt64
 	var joined int64
 	var account sql.NullString
 	var lastContrib sql.NullInt64
 	if err := r.Scan(&st.ID, &st.KeyFP, &st.PublicKey, &st.Status, &st.Trust, &gained, &inv, &joined, &approved,
-		&seen, &st.TrustOperator, &penalized, &st.Profiles, &account, &st.Contributions, &lastContrib, &st.Examples,
-		&st.Reports); err != nil {
+		&seen, &st.TrustOperator, &penalized, &farAt, &st.Profiles, &account, &st.Contributions, &lastContrib,
+		&st.Examples, &st.Reports); err != nil {
 		return nil, err
 	}
 	st.Account, st.LastContrib, st.TrustPenalty = account.String, fromMS(lastContrib), fromMS(penalized)
+	st.FarAt = fromMS(farAt)
 	st.TrustGainedAt, st.ApprovedAt, st.LastSeenAt = fromMS(gained), fromMS(approved), fromMS(seen)
 	st.JoinedAt = time.UnixMilli(joined)
 	if inv.Valid {
@@ -404,6 +406,17 @@ func (s *Store) SetTrust(id int64, trust float64, gainedAt time.Time) error {
 func (s *Store) PenalizeTrust(id int64, trust float64, penalizedAt time.Time) error {
 	_, err := s.db.Exec(s.q("UPDATE stations SET trust = ?, trust_penalized_at = ? WHERE id = ?"), trust,
 		ms(penalizedAt), id)
+	return err
+}
+
+// SetFar records whether the last combination that used the station found it far from the reference (at nil:
+// in line). For an anchor this is the doubt about its word: a doubted anchor decides nothing about models.
+func (s *Store) SetFar(id int64, at *time.Time) error {
+	var v any
+	if at != nil {
+		v = ms(*at)
+	}
+	_, err := s.db.Exec(s.q("UPDATE stations SET far_at = ? WHERE id = ?"), v, id)
 	return err
 }
 

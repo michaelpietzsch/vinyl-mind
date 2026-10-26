@@ -45,6 +45,9 @@ var migrations = [][]string{
 		// A station that reached it by growing is not promoted; the operator decides (docs/operations.md, Updates).
 		"UPDATE stations SET trust_operator = 1 WHERE trust >= 1 AND trust_gained_at IS NULL",
 		"ALTER TABLE stations ADD COLUMN trust_penalized_at BIGINT",
+		// Set while the last combination that used the station found it far from the reference (for an anchor:
+		// from the other anchors), so that the doubt about an anchor's word outlives a restart
+		"ALTER TABLE stations ADD COLUMN far_at BIGINT",
 		// How often a key came back after leaving, within a day: a station that churns is held to a small limit
 		"ALTER TABLE stations ADD COLUMN returns INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE stations ADD COLUMN returns_since BIGINT",

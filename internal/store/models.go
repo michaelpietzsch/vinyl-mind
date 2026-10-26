@@ -183,6 +183,7 @@ type Report struct {
 	StationAccount   string
 	StationJoined    time.Time
 	StationPenalized *time.Time // the station's last penalty, for an anchor: the last report of it being far
+	StationFarAt     *time.Time // set while the last combination that used the station found it far
 	ProfileID        string
 	ModelVersion     int64
 	Adopted          bool
@@ -224,7 +225,8 @@ func (s *Store) Reports(version, stationID int64) ([]Report, error) {
 		args = append(args, stationID)
 	}
 	rows, err := s.db.Query(s.q(`SELECT r.station_id, st.key_fp, st.status, st.trust, st.trust_operator, st.account,
-		st.joined_at, st.trust_penalized_at, r.profile_id, r.model_version, r.adopted, r.kinds, r.verdict, r.received_at
+		st.joined_at, st.trust_penalized_at, st.far_at, r.profile_id, r.model_version, r.adopted, r.kinds, r.verdict,
+		r.received_at
 		FROM check_reports r JOIN stations st ON st.id = r.station_id WHERE `+where+` ORDER BY r.received_at`),
 		args...)
 	if err != nil {
@@ -236,14 +238,14 @@ func (s *Store) Reports(version, stationID int64) ([]Report, error) {
 		var r Report
 		var kinds string
 		var received, joined int64
-		var penalized sql.NullInt64
+		var penalized, farAt sql.NullInt64
 		var account sql.NullString
 		if err := rows.Scan(&r.StationID, &r.StationFP, &r.StationStatus, &r.StationTrust, &r.StationOperator,
-			&account, &joined, &penalized, &r.ProfileID, &r.ModelVersion, &r.Adopted, &kinds, &r.Verdict,
+			&account, &joined, &penalized, &farAt, &r.ProfileID, &r.ModelVersion, &r.Adopted, &kinds, &r.Verdict,
 			&received); err != nil {
 			return nil, err
 		}
-		r.StationAccount, r.StationPenalized = account.String, fromMS(penalized)
+		r.StationAccount, r.StationPenalized, r.StationFarAt = account.String, fromMS(penalized), fromMS(farAt)
 		if err := json.Unmarshal([]byte(kinds), &r.Kinds); err != nil {
 			return nil, err
 		}

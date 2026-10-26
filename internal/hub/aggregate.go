@@ -63,7 +63,7 @@ type Result struct {
 	Used      []Used
 	Excluded  []Excluded
 	Reason    string // why there is no combination
-	Disagree  int    // coefficients that exactly two anchors learned and placed further apart than the band
+	Disagree  int    // coefficients on which no majority of the anchors agrees: two learners apart, or a split
 	Kept      []int  // those coefficients, kept at the published model or the prior instead of a reference
 }
 
@@ -78,9 +78,9 @@ func Combine(in []Input, cfg config.Aggregation, nCoef int) *Result {
 // Every claim in a contribution is the station's own word, so nothing in it may buy influence beyond what the
 // operator's anchors allow: a contribution is held within a band around the anchors' coefficients, the stations
 // the operator does not vouch for share one fifth in equal parts, and a weight that no anchor learned stays
-// where the anchors left it. Two anchors have no majority: a coefficient that exactly two of them learned and
-// placed further apart than the band allows (pairSpread) has no reference and is kept at the published model, or
-// at the prior the other anchors sent for it; with neither to keep it at, there is no model.
+// where the anchors left it. A coefficient has a reference only where a majority of all anchors stands behind
+// one position (see reference): otherwise it is kept at the published model, or at the prior the anchors that
+// did not learn it sent for it; with neither to keep it at, there is no model.
 func CombineWith(in []Input, cfg config.Aggregation, nCoef int, published []float64) *Result {
 	res := &Result{}
 	for _, x := range in {
@@ -130,7 +130,7 @@ func CombineWith(in []Input, cfg config.Aggregation, nCoef int, published []floa
 	// The reference is the anchors' position; every other station is held within the band around it. An anchor
 	// is held to the other anchors: to the median of all of them while they are few (a median of three stands one
 	// bad anchor), and to the others alone once at least three of them learned the coefficient. An anchor far
-	// from the other anchors, on the coefficients enough of them share, is no reference in this combination: it
+	// from the other anchors, on the coefficients every anchor learned, is no reference in this combination: it
 	// is held like a newcomer, and a coefficient only it learned stays the prior rather than its word. Only other
 	// anchors can bring this about, never newcomers, and it changes no trust: the operator is told.
 	if res.Anchors >= 3 && demote(res.Used, cfg, nCoef) {
@@ -148,8 +148,8 @@ func CombineWith(in []Input, cfg config.Aggregation, nCoef int, published []floa
 		case !math.IsNaN(pos.ref[j]):
 			// the prior, from the anchors that did not learn the coefficient
 		default:
-			res.Reason = fmt.Sprintf("two anchors disagree on %d coefficients and nothing is published to keep them at",
-				res.Disagree)
+			res.Reason = fmt.Sprintf("the anchors have no majority on %d coefficients and nothing is published to "+
+				"keep them at", res.Disagree)
 			return res
 		}
 		res.Kept = append(res.Kept, j)
@@ -262,61 +262,77 @@ func capStationEvidence(used []Used, max float64) {
 // which one bad anchor among three cannot move.
 const leaveOneOut = 3
 
-// pairSpread widens the band for the question whether two anchors disagree: the band is the spread of one
-// position, and the difference of two independent honest positions spreads root two times as wide. In the
-// simulation (heterogeneity 0.15) two honest anchors never disagree at this width over twenty seeds, and did in
-// two at the band itself; an anchor that turns can still move a coefficient by at most half of it.
+// pairSpread widens the band for the question whether two anchors agree: the band is the spread of one position,
+// and the difference of two independent honest positions spreads root two times as wide. In the simulation
+// (heterogeneity 0.15) two honest anchors never disagree at this width over twenty seeds, and did in two at the
+// band itself; an anchor that turns can still move a coefficient by at most half of it.
 const pairSpread = math.Sqrt2
 
-// position is the anchors' position: per coefficient the reference and the band around it, whether an anchor
-// learned the coefficient at all (known: everyone is held to the reference), and whether exactly two did and
-// disagree (then there is no reference; ref holds the prior from the anchors that did not learn it, NaN when
-// every anchor did).
+// position is the anchors' position: per coefficient the reference and the band around it, whether a majority of
+// the anchors stands behind it (known: everyone is held to the reference), and whether anchors learned the
+// coefficient without such a majority (disagree: there is no reference; ref holds the prior from the anchors that
+// did not learn it, NaN when every anchor did).
 type position struct {
 	ref, band []float64
 	known     []bool
 	disagree  []bool
 }
 
-// reference is the anchors' position, per coefficient the median of the means of the anchors that learned it,
-// leaving out the station exclude (0: none) where at least leaveOneOut others learned it. The band around it is
-// ConsistencyK robust spreads wide. With fewer than three such anchors there is no spread to measure, and the
-// floor stands in; with more, the spread is their median absolute deviation, which a minority of them cannot
-// inflate. Where no anchor learned a coefficient, the reference is what the anchors sent for it (the prior they
-// trained towards) and known is false: nobody is held to it, and the combination keeps it as it is. Where exactly
-// two learned it and they are further apart than pairSpread bands, there is no majority and no reference
-// (disagree).
+// reference is the anchors' position. Per coefficient, the anchors that learned it take the median of their
+// means, and those within the floor band of it (two: within pairSpread bands of each other) stand behind that
+// position. Only when they are more than half of all anchors is it the reference, the median of those behind it,
+// with a band of ConsistencyK robust spreads around it: with fewer than three of them there is no spread to
+// measure and the floor stands in, with more it is their median absolute deviation. A minority of anchors, be
+// they two with a second opinion among many, colluders among the few that learned a coefficient, or one of two
+// equal camps, defines nothing: the coefficient has no reference (disagree). The station exclude (0: none) is
+// left out where at least leaveOneOut others learned the coefficient, and the majority is then one of the
+// others; with fewer others, all anchors judge, which one bad anchor among three cannot sway. Where no anchor
+// learned a coefficient, the reference is what the anchors sent for it (the prior they trained towards) and
+// known is false: nobody is held to it, and the combination keeps it as it is.
 func reference(used []Used, exclude int64, cfg config.Aggregation, nCoef int) position {
 	p := position{make([]float64, nCoef), make([]float64, nCoef), make([]bool, nCoef), make([]bool, nCoef)}
+	n := countAnchors(used)
 	for j := range p.ref {
 		learned := func(u Used) bool { return u.Anchor && u.Kind.Informs(j) }
-		col := stationMeans(used, j, learned)
+		col, judges := stationMeans(used, j, learned), n
 		if exclude != 0 {
 			others := stationMeans(used, j, func(u Used) bool { return learned(u) && u.StationID != exclude })
 			if len(others) >= leaveOneOut {
-				col = others
+				col, judges = others, n-1
 			}
 		}
 		p.band[j] = cfg.ConsistencyK * cfg.ConsistencyFloor
-		switch {
-		case len(col) == 0:
+		if len(col) == 0 {
 			p.ref[j] = median(stationMeans(used, j, func(u Used) bool { return u.Anchor }))
-		case len(col) == 2 && math.Abs(col[0]-col[1]) > pairSpread*p.band[j]:
+			continue
+		}
+		radius := p.band[j]
+		if len(col) == 2 {
+			radius = pairSpread * p.band[j] / 2 // both within it of their midpoint: pairSpread bands apart at most
+		}
+		m := median(col)
+		var behind []float64
+		for _, v := range col {
+			if math.Abs(v-m) <= radius {
+				behind = append(behind, v)
+			}
+		}
+		if 2*len(behind) <= judges {
 			p.disagree[j] = true
 			p.ref[j] = math.NaN()
 			if rest := stationMeans(used, j, func(u Used) bool { return u.Anchor && !u.Kind.Informs(j) }); len(rest) > 0 {
 				p.ref[j] = median(rest)
 			}
-		default:
-			p.known[j] = true
-			p.ref[j] = median(col)
-			if len(col) >= 3 {
-				dev := make([]float64, len(col))
-				for i, v := range col {
-					dev[i] = math.Abs(v - p.ref[j])
-				}
-				p.band[j] = cfg.ConsistencyK * math.Max(1.4826*median(dev), cfg.ConsistencyFloor)
+			continue
+		}
+		p.known[j] = true
+		p.ref[j] = median(behind)
+		if len(behind) >= 3 {
+			dev := make([]float64, len(behind))
+			for i, v := range behind {
+				dev[i] = math.Abs(v - p.ref[j])
 			}
+			p.band[j] = cfg.ConsistencyK * math.Max(1.4826*median(dev), cfg.ConsistencyFloor)
 		}
 	}
 	return p
@@ -345,14 +361,13 @@ func stationMeans(used []Used, j int, keep func(Used) bool) []float64 {
 }
 
 // demote takes the anchor status away, for this combination, from the anchors far from the other anchors: outside
-// the band on farCount or more of the coefficients that at least half of the other anchors learned, two at the
-// least, judged against those. A coefficient that fewer of them learned says nothing here: a second opinion held
-// by two has no majority, and among the few that hold one a pair of colluders would be the majority, so a bad
-// anchor cannot take an honest one down on it. Nothing is demoted when the far anchors are half of all anchors
-// or more: that is a tie, or a majority, which the rest cannot judge. It reports whether anything changed.
+// the band on farCount or more of the coefficients that every anchor learned, judged against the others. A
+// coefficient that only some learned says nothing here, however many: among the few that hold a second opinion
+// a pair of colluders would be the majority, and the honest anchors beside them would be the ones found far.
+// Nothing is demoted when the far anchors are half of all anchors or more: that is a tie, or a majority, which
+// the rest cannot judge. It reports whether anything changed.
 func demote(used []Used, cfg config.Aggregation, nCoef int) bool {
 	n := countAnchors(used)
-	need := max(2, (n-1+1)/2) // half of the other anchors, rounded up
 	learned := make([]int, nCoef)
 	for j := range learned {
 		learned[j] = len(stationMeans(used, j, func(u Used) bool { return u.Anchor && u.Kind.Informs(j) }))
@@ -364,11 +379,7 @@ func demote(used []Used, cfg config.Aggregation, nCoef int) bool {
 		}
 		p := reference(used, u.StationID, cfg, nCoef)
 		for j := range p.known {
-			others := learned[j]
-			if u.Kind.Informs(j) {
-				others--
-			}
-			if others < need {
+			if learned[j] < n {
 				p.known[j] = false
 			}
 		}

@@ -488,6 +488,35 @@ func TestDoubtedAnchorDecidesNothing(t *testing.T) {
 	}
 }
 
+// The fourth review's B4-4: the doubt about an anchor is in the database, so a fresh process a day later, with no
+// combination since, still does not let the anchor decide.
+func TestDoubtSurvivesARestart(t *testing.T) {
+	f := newFixture(t)
+	for _, s := range []string{"a", "b"} {
+		f.contribute(s, "p1", "1", "usb_turntable.mm", 1)
+	}
+	f.contribute("bad", "p1", "1", "usb_turntable.mm", 50)
+	v := outcome(f.combine(t0), "1", spec.ClassAll).Version
+	if _, err := f.hub.Publish(v, t0); err != nil {
+		t.Fatal(err)
+	}
+	st, _ := f.st.Station("fp-bad")
+	if st.FarAt == nil {
+		t.Fatal("the far anchor is not recorded as such")
+	}
+	_, key, _ := ed25519.GenerateKey(rand.Reader)
+	f.hub = New(f.cfg, f.st, key, nil) // a fresh process, 25 hours later, no combination since
+	f.now = t0.Add(25 * time.Hour)
+	f.operator, f.trust = false, 0.9
+	report(f, "r1", "p1", v, 0.1)
+	report(f, "r2", "p1", v, 0.1)
+	f.operator, f.trust = true, 1
+	report(f, "bad", "p1", v, 0.9)
+	if status(f, v) != store.Published {
+		t.Fatalf("a doubted anchor decided after a restart: %s", status(f, v))
+	}
+}
+
 // Two anchors that disagree on a coefficient keep it at the published model; the group reports the dispute, at
 // most once a day however often the state changes.
 func TestDisputedCoefficientsAreKeptAtThePublishedModel(t *testing.T) {

@@ -31,14 +31,15 @@ type Hub struct {
 
 	mu      sync.Mutex
 	seen    map[int64]bool       // stations used in the last combination: the ones whose reports may earn trust
-	far     map[int64]bool       // stations the last combination found far: anchors among them decide nothing
 	state   map[string]string    // the last state per group, to report a change once
 	stateAt map[string]time.Time // when a group was last reported in a state: each state at most once a day
 }
 
 // stateReportEvery is how often a group is reported in the same state at most: a state that flaps at a threshold
 // (an anchor at the band's edge, two anchors a hair apart) is one event and one warning a day per state, not one
-// per run; the current state is always in meta last_combine and in vinyl-mind status.
+// per run, and a state that is not a model is repeated once a day as long as it lasts, so that a coefficient
+// kept through a permanent dispute is not reported once and forgotten; the current state is always in meta
+// last_combine and in vinyl-mind status.
 const stateReportEvery = 24 * time.Hour
 
 // New returns a hub.
@@ -47,7 +48,7 @@ func New(cfg config.Config, st *store.Store, key ed25519.PrivateKey, log *slog.L
 		log = slog.Default()
 	}
 	return &Hub{cfg: cfg, store: st, key: key, fp: keys.Fingerprint(key.Public().(ed25519.PublicKey)), log: log,
-		seen: map[int64]bool{}, far: map[int64]bool{}, state: map[string]string{}, stateAt: map[string]time.Time{}}
+		seen: map[int64]bool{}, state: map[string]string{}, stateAt: map[string]time.Time{}}
 }
 
 // Outcome is what one combine run did for one group.
@@ -123,16 +124,13 @@ func (h *Hub) Combine(now time.Time, dryRun bool) ([]Outcome, error) {
 	}
 	h.mu.Lock()
 	h.seen = p.seen
-	h.far = make(map[int64]bool, len(p.far))
-	for id := range p.far {
-		h.far[id] = true
-	}
 	for _, st := range states {
 		key := fmt.Sprintf("%d/%s/%s", st.Group.FeatureVersion, st.Group.DetectorVersion, st.Group.ChainClass)
-		if h.state[key] == st.State {
+		changed := h.state[key] != st.State
+		h.state[key] = st.State
+		if !changed && st.State == "model" {
 			continue
 		}
-		h.state[key] = st.State
 		if at, ok := h.stateAt[key+"/"+st.State]; ok && now.Sub(at) < stateReportEvery {
 			continue
 		}
@@ -228,8 +226,9 @@ func (h *Hub) groupState(gr groupResult, o Outcome, anchors []anchorInfo, now ti
 		switch {
 		case kept > 0:
 			gs.State = "anchors_disagree"
-			gs.Detail = fmt.Sprintf("two anchors disagree on %d coefficients, kept at the published model or the "+
-				"prior until they agree (see which with vinyl-mind combine -dry-run)", kept)
+			gs.Detail = fmt.Sprintf("the anchors have no majority on %d coefficients (two learners apart, or a "+
+				"split), kept at the published model or the prior until they agree (see which with vinyl-mind "+
+				"combine -dry-run)", kept)
 		case gs.Voters == 0:
 			gs.State = "no_voter"
 			gs.Detail = "every anchor contributed to this group's model, or shares an account with one that did: " +
@@ -513,7 +512,8 @@ func round(xs []float64) []float64 {
 	return out
 }
 
-// adjustTrust applies what a pass found. Trust the operator gave never changes here: an anchor far from the other
+// adjustTrust applies what a pass found. Every station used records whether it was far (far_at), which for an
+// anchor is the doubt about its word. Trust the operator gave never changes here: an anchor far from the other
 // anchors is reported, not demoted, so that no group of stations can push the reference aside. Automatic trust
 // falls by TrustPenalty for a contribution far from the reference, at most once a day and only for a contribution
 // that changed since the last penalty, and rises by TrustStep for a consistent one, at most once a day and never
@@ -530,6 +530,15 @@ func (h *Hub) adjustTrust(p *pass, now time.Time) error {
 	for _, st := range stations {
 		if !p.seen[st.ID] {
 			continue
+		}
+		if _, far := p.far[st.ID]; far {
+			if err := h.store.SetFar(st.ID, &now); err != nil {
+				return err
+			}
+		} else if st.FarAt != nil {
+			if err := h.store.SetFar(st.ID, nil); err != nil {
+				return err
+			}
 		}
 		if st.TrustOperator {
 			// Reported once a day (the penalty stamp serves as the clock, and keeps the anchor from deciding about

@@ -28,8 +28,8 @@ func Verdict(r spec.CheckReport, tolerance float64) string {
 // stations the operator trusts. Everyone else's vote is counted and shown, but a report is only a claim, and
 // claims from stations nobody vouches for cannot publish a model or take one away. A station whose contribution
 // is in the model, or that shares an account with one, cannot vote for it; it can vote against it. An anchor
-// that the last combination found far from the other anchors, or that was reported far within the last day
-// (anchor_far, anchor_demoted), decides nothing: its word is in doubt until the others agree with it again.
+// that the last combination that used it found far from the other anchors (anchor_far, anchor_demoted) decides
+// nothing: its word is in doubt until a combination finds it in line again.
 type Tally struct {
 	Reports        int     // reporting profiles of voting stations
 	Stations       int     // voting stations
@@ -126,13 +126,6 @@ func (h *Hub) reviewWindow() time.Duration {
 	return time.Duration(h.cfg.Publication.ReviewHours) * time.Hour
 }
 
-// doubted says whether an anchor was reported far from the other anchors within the last day: for an anchor the
-// penalty stamp is set only by that report, so it is the clock for the doubt, and it outlives a restart, which
-// the last combination's far set does not.
-func (h *Hub) doubted(reported *time.Time, now time.Time) bool {
-	return reported != nil && now.Sub(*reported) < 24*time.Hour
-}
-
 // tally returns the counts and each station's vote.
 func (h *Hub) tally(m *store.Model, now time.Time) (Tally, map[int64]string, error) {
 	all, err := h.store.Reports(m.Version, 0)
@@ -156,9 +149,6 @@ func (h *Hub) tally(m *store.Model, now time.Time) (Tally, map[int64]string, err
 	worse, notWorse := map[int64]int{}, map[int64]int{}
 	trust, anchor := map[int64]float64{}, map[int64]bool{}
 	minAge := time.Duration(h.cfg.Publication.MinVoteAgeDays) * 24 * time.Hour
-	h.mu.Lock()
-	far := h.far
-	h.mu.Unlock()
 	for _, r := range all {
 		if r.StationStatus != store.Active || now.Sub(r.StationJoined) < minAge {
 			continue
@@ -168,8 +158,7 @@ func (h *Hub) tally(m *store.Model, now time.Time) (Tally, map[int64]string, err
 			continue // a station's good word for a model built from its own contribution counts for nothing
 		}
 		trust[r.StationID] = r.StationTrust
-		anchor[r.StationID] = h.anchor(r.StationTrust, r.StationOperator) && !far[r.StationID] &&
-			!h.doubted(r.StationPenalized, now)
+		anchor[r.StationID] = h.anchor(r.StationTrust, r.StationOperator) && r.StationFarAt == nil
 		t.Reports++
 		if r.Verdict == store.Worse {
 			worse[r.StationID]++

@@ -258,7 +258,8 @@ func TestUninformativeWeights(t *testing.T) {
 		}
 		in = append(in, Input{StationID: i, ProfileID: "p", Trust: cfg.TrustAutoMax, Kind: k})
 	}
-	in[0].Anchor, in[0].Trust = true, 1 // one anchor with a second opinion
+	in[0].Anchor, in[0].Trust = true, 1 // two anchors with a second opinion: the majority of the three
+	in[1].Anchor, in[1].Trust = true, 1
 	in[3].Anchor, in[3].Trust = true, 1 // one without
 	r := Combine(in, cfg, 11)
 	if r.Coef[4] < 2 || r.Coef[4] > 2.2 || !near(r.Coef[5], -1) || r.Basis[4] != 3 || r.Basis[1] != 8 {
@@ -273,13 +274,14 @@ func TestUninformativeWeights(t *testing.T) {
 		t.Fatalf("short mask: %+v", r.Excluded)
 	}
 	in[1].Kind.Informative = nil
-	// No anchor learned the weight: two newcomers with a second opinion cannot define it, it stays the prior
+	// No majority of the anchors learned the weight: one anchor and a newcomer with a second opinion cannot define
+	// it, it stays the prior
 	in[0].Kind.Informative = []bool{true, true, true, false, false, true, true, true, true, true}
 	in[0].Kind.Coef[4], in[0].Kind.Coef[5] = 0, 0
 	in[1].Kind.Coef[4], in[2].Kind.Coef[4] = 50, 50
 	r = Combine(in, cfg, 11)
-	if r.Basis[4] != 0 || !near(r.Coef[4], 0) {
-		t.Fatalf("a weight no anchor learned: %v, basis %v", r.Coef[4], r.Basis)
+	if r.Basis[4] != 0 || !near(r.Coef[4], 0) || r.Disagree != 2 {
+		t.Fatalf("a weight no majority of the anchors learned: %v, basis %v, disagree %d", r.Coef[4], r.Basis, r.Disagree)
 	}
 }
 
@@ -353,7 +355,7 @@ func TestTwoAnchors(t *testing.T) {
 	}
 	in[1].Kind = kind(50, 1_000_000, 1_000_000, 0) // one of the two turns
 	r = Combine(in, cfg, 11)
-	if r.Coef != nil || r.Disagree != 11 || !strings.Contains(r.Reason, "disagree") {
+	if r.Coef != nil || r.Disagree != 11 || !strings.Contains(r.Reason, "no majority") {
 		t.Fatalf("two disagreeing anchors must not make a model: coef %v reason %q disagree %d", r.Coef != nil,
 			r.Reason, r.Disagree)
 	}
@@ -392,7 +394,8 @@ func TestTwoAnchors(t *testing.T) {
 }
 
 // The third review's B3-1: a coefficient that only two anchors learned is a second opinion, not a majority. It
-// neither demotes the honest anchor that holds it, nor does the bad anchor define it: it is kept at the prior.
+// neither demotes the honest anchor that holds it, nor does the bad anchor define it; and once the bad one is
+// demoted, the honest one alone is no majority of the anchors either: the coefficient stays the prior.
 func TestSecondOpinionOfTwoAnchorsIsNoMajority(t *testing.T) {
 	cfg := config.Default().Aggregation
 	for _, n := range []int{3, 4, 5} {
@@ -422,10 +425,10 @@ func TestSecondOpinionOfTwoAnchorsIsNoMajority(t *testing.T) {
 				t.Fatalf("%d anchors: honest anchor %d demoted %v far %v", n, u.StationID, u.Demoted, u.Far)
 			}
 		}
-		// The bad anchor demoted, the honest one is the only anchor that learned gc: its word stands (and the
-		// newcomers, who learned gc differently, are far from it: one anchor's word is the reference)
-		if r.Coef[4] < 1.5 || r.Coef[4] > 2.1 || r.Coef[1] > 1.3 {
-			t.Fatalf("%d anchors: coefficients %v", n, r.Coef)
+		// The bad anchor demoted, the honest one is the only anchor that learned gc: one of n−1 is no majority,
+		// the coefficient stays the prior the other anchors sent
+		if !near(r.Coef[4], 0) || r.Basis[4] != 0 || r.Coef[1] > 1.3 || len(r.Kept) != 2 {
+			t.Fatalf("%d anchors: coefficients %v basis %v kept %v", n, r.Coef, r.Basis, r.Kept)
 		}
 	}
 	// A bad anchor that is honest everywhere but on the second opinion is not far, and still defines nothing:
@@ -455,16 +458,19 @@ func TestSecondOpinionOfTwoAnchorsIsNoMajority(t *testing.T) {
 	}
 }
 
-// Two colluding anchors share a second opinion with one honest anchor among seven: a majority among the three that
-// learned it, a minority among the anchors. The honest one keeps its anchor status and its second opinion stands.
+// Two colluding anchors share a second opinion with three honest anchors among seven: the honest three are the
+// majority of the five remaining anchors once the colluders are demoted, and their second opinion stands.
 func TestColludersOnASecondOpinionDemoteNobody(t *testing.T) {
 	cfg := config.Default().Aggregation
 	in := anchors(5, 1)
-	for i := 1; i < 5; i++ {
+	for i := range in {
+		if i < 3 {
+			in[i].Kind.Coef[4], in[i].Kind.Coef[5] = 2+0.05*float64(i), -1
+			continue
+		}
 		in[i].Kind.Informative = []bool{true, true, true, false, false, true, true, true, true, true}
 		in[i].Kind.Coef[4], in[i].Kind.Coef[5] = 0, 0
 	}
-	in[0].Kind.Coef[4], in[0].Kind.Coef[5] = 2, -1
 	for i := int64(98); i < 100; i++ {
 		in = append(in, Input{StationID: i, ProfileID: "p", Trust: 1, Anchor: true, Kind: kind(50, 1_000_000, 1_000_000, 0)})
 	}
@@ -480,8 +486,93 @@ func TestColludersOnASecondOpinionDemoteNobody(t *testing.T) {
 			t.Fatalf("honest anchor %d demoted %v far %v", u.StationID, u.Demoted, u.Far)
 		}
 	}
-	if r.Coef[4] < 1.5 || r.Coef[4] > 2.1 || r.Coef[1] > 1.3 {
-		t.Fatalf("coefficients %v", r.Coef)
+	if r.Coef[4] < 1.9 || r.Coef[4] > 2.2 || r.Coef[1] > 1.3 || r.Disagree != 0 {
+		t.Fatalf("coefficients %v disagree %d", r.Coef, r.Disagree)
+	}
+}
+
+// The fourth review's B4-1: colluders who learned a second opinion that few honest anchors learned. On the
+// coefficients everyone learned they are far and demoted; honest anchors are never found far on the second
+// opinion, and the colluders define it neither when they are the majority of its learners nor when they are
+// honest everywhere else.
+func TestMinorityColludersOnASecondOpinion(t *testing.T) {
+	cfg := config.Default().Aggregation
+	noGC := []bool{true, true, true, false, false, true, true, true, true, true}
+	for _, c := range []struct{ n, b int }{{5, 2}, {6, 2}, {7, 3}, {9, 4}} {
+		for _, subtle := range []bool{false, true} {
+			in := anchors(c.n-c.b, 1)
+			for i := range in {
+				if i == 0 {
+					in[i].Kind.Coef[4], in[i].Kind.Coef[5] = 2, -1 // the one honest second opinion
+					continue
+				}
+				in[i].Kind.Informative = noGC
+				in[i].Kind.Coef[4], in[i].Kind.Coef[5] = 0, 0
+			}
+			for b := 0; b < c.b; b++ {
+				k := kind(50, 1_000_000, 1_000_000, 0)
+				if subtle {
+					k = kind(1.1, 1_000_000, 1_000_000, 0)
+					k.Coef[4], k.Coef[5] = 50, -50
+				}
+				in = append(in, Input{StationID: int64(90 + b), ProfileID: "p", Trust: 1, Anchor: true, Kind: k})
+			}
+			for i := int64(10); i < 14; i++ {
+				in = append(in, Input{StationID: i, ProfileID: "p", Trust: cfg.TrustAutoMax, Kind: kind(1.1, 50, 2000, 0.06)})
+			}
+			r := Combine(in, cfg, 11)
+			if r.Coef == nil {
+				t.Fatalf("N=%d B=%d subtle %v: %s", c.n, c.b, subtle, r.Reason)
+			}
+			demoted := 0
+			for _, u := range r.Used {
+				switch {
+				case u.StationID >= 90 && u.Demoted:
+					demoted++
+				case u.StationID < 10 && (u.Demoted || u.Far):
+					t.Fatalf("N=%d B=%d subtle %v: honest anchor %d demoted %v far %v", c.n, c.b, subtle, u.StationID,
+						u.Demoted, u.Far)
+				}
+			}
+			if !subtle && demoted != c.b {
+				t.Fatalf("N=%d B=%d: %d of the colluders demoted", c.n, c.b, demoted)
+			}
+			if !near(r.Coef[4], 0) || !near(r.Coef[5], 0) || r.Basis[4] != 0 || r.Coef[1] > 1.3 {
+				t.Fatalf("N=%d B=%d subtle %v: the colluders defined something: coef %v basis %v", c.n, c.b, subtle,
+					r.Coef, r.Basis)
+			}
+		}
+	}
+}
+
+// The fourth review's B4-6: two equal camps among the anchors, further apart than the band allows, have no
+// majority: the coefficient has no reference and nobody is far on it, so the honest anchors keep their word.
+func TestEqualCampsHaveNoReference(t *testing.T) {
+	cfg := config.Default().Aggregation
+	in := anchors(2, 1)
+	for i := int64(98); i < 100; i++ {
+		in = append(in, Input{StationID: i, ProfileID: "p", Trust: 1, Anchor: true, Kind: kind(1.1, 1_000_000, 1_000_000, 0)})
+	}
+	in[2].Kind.Coef[1], in[3].Kind.Coef[1] = 50, 50 // the two colluders agree on one coefficient
+	for i := int64(10); i < 14; i++ {
+		in = append(in, Input{StationID: i, ProfileID: "p", Trust: cfg.TrustAutoMax, Kind: kind(1.1, 50, 2000, 0.06)})
+	}
+	r := Combine(in, cfg, 11)
+	if r.Coef != nil || r.Disagree != 1 {
+		t.Fatalf("two camps, nothing published: coef %v disagree %d reason %q", r.Coef != nil, r.Disagree, r.Reason)
+	}
+	published := make([]float64, 11)
+	for j := range published {
+		published[j] = 0.9
+	}
+	r = CombineWith(in, cfg, 11, published)
+	if r.Coef == nil || !near(r.Coef[1], 0.9) || r.Basis[1] != 0 || r.Coef[2] > 1.2 {
+		t.Fatalf("the disputed coefficient is kept, the rest combined: %v basis %v", r.Coef, r.Basis)
+	}
+	for _, u := range r.Used {
+		if u.Anchor && (u.Far || u.Demoted) {
+			t.Fatalf("anchor %d far %v demoted %v in a split nobody can judge", u.StationID, u.Far, u.Demoted)
+		}
 	}
 }
 
