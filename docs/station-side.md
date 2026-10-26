@@ -1,8 +1,9 @@
 # What a station needs
 
 Vinyl-Mind is the hub; vinyl-check is the station. This page lists what vinyl-check has to implement to take part,
-in the order it is needed. It is written against vinyl-check 1.0.1 and its `learning.py`. The exchange itself is
-defined in `spec/` and `docs/api.md`; `internal/client` is a minimal client in Go that does all of it.
+in the order it is needed. vinyl-check 1.1.0 implements all of it (`vinylcheck/vinylmind.py`); the page stays as
+the reference for what a station does and why. The exchange itself is defined in `spec/` and `docs/api.md`;
+`internal/client` is a minimal client in Go that does all of it.
 
 ## Before anything is sent
 

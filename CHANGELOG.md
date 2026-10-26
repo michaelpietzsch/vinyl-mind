@@ -3,6 +3,10 @@
 Versions of the server. The specification has its own versions (feature versions in `spec/`); a server release
 names the feature versions it accepts.
 
+## Unreleased
+
+- Documentation: the public hub the author runs, and that vinyl-check 1.1.0 implements the station side.
+
 ## 0.1.7 – 2026-10-25
 
 - Features that never vary: a contribution says per kind which features were `informative` (optional, one boolean
