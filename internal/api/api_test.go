@@ -77,6 +77,8 @@ func (e *env) station() *client.Station {
 }
 
 // active returns a station that joined with an invitation.
+// active returns a station that joined with an invitation, trusted by the operator: these tests are about the
+// protocol, and models only form around stations the operator trusts.
 func (e *env) active() *client.Station {
 	e.t.Helper()
 	s := e.station()
@@ -84,6 +86,13 @@ func (e *env) active() *client.Station {
 	r, err := s.Join(&code)
 	if err != nil || r.Status != http.StatusCreated {
 		e.t.Fatalf("join: %v %s", err, r.Body)
+	}
+	st, err := e.store.Station(keys.Fingerprint(s.Key.Public().(ed25519.PublicKey)))
+	if err != nil || st == nil {
+		e.t.Fatalf("station after join: %v", err)
+	}
+	if err := e.store.SetOperatorTrust(st.ID, 1, true); err != nil {
+		e.t.Fatal(err)
 	}
 	return s
 }
@@ -315,6 +324,7 @@ func TestModelsAndReports(t *testing.T) {
 	report := example(t, "check-report.json")
 	delete(report["kinds"].(map[string]any), "tick")
 	path := func(profile string) string { return fmt.Sprintf("/v1/profiles/%s/checks/%d", profile, v) }
+	// The contributors' own reports do not publish their candidate; two other anchors do, after the review window
 	do(t, stations[0], "PUT", path(profileA), report, 200)
 	do(t, stations[0], "PUT", path("profile-other-aaaaaa"), report, 200)
 	r = do(t, stations[1], "PUT", path(profileA), report, 200)
@@ -323,8 +333,17 @@ func TestModelsAndReports(t *testing.T) {
 		ModelStatus string `json:"model_status"`
 	}
 	_ = r.JSON(&res)
+	if res.Verdict != store.NotWorse || res.ModelStatus != store.Candidate {
+		t.Fatalf("contributors cannot publish their own candidate: %s", r.Body)
+	}
+	e.now = e.now.Add(49 * time.Hour)
+	voters := []*client.Station{e.active(), e.active()}
+	do(t, voters[0], "PUT", path(profileA), report, 200)
+	do(t, voters[0], "PUT", path("profile-other-aaaaaa"), report, 200)
+	r = do(t, voters[1], "PUT", path(profileA), report, 200)
+	_ = r.JSON(&res)
 	if res.Verdict != store.NotWorse || res.ModelStatus != store.Published {
-		t.Fatalf("third report from a second station publishes: %s", r.Body)
+		t.Fatalf("third report from a second voting anchor publishes: %s", r.Body)
 	}
 	_ = do(t, s, "GET", q, nil, 200).JSON(&ms)
 	if ms.Published == nil || ms.Candidate != nil {

@@ -27,7 +27,9 @@ type Params struct {
 	Heterogeneity  float64 // spread of each profile's true coefficients around the common truth
 	ChainShift     float64 // spread of each chain's feature offsets (what the shared scaling must absorb)
 	RecordShift    float64 // spread of each record's feature offsets: records differ, so does what is a click
-	Attackers      int     // new stations sending a model that points the other way, with inflated claims
+	Anchors        int     // honest stations the operator trusts; the other honest ones are newcomers at the automatic maximum
+	Attackers      int     // stations sending a model that points the other way, with inflated claims
+	AttackerTrust  float64 // the attackers' trust: the automatic maximum is what patience buys them
 	NoGC           float64 // share of the honest stations without a second opinion: gc and gc_missing are constant
 	GCOutage       float64 // share of the events without a second opinion on the stations that have one
 	NewRecordings  int     // labelled recordings of the new profile that has little data of its own
@@ -41,7 +43,8 @@ type Params struct {
 // Defaults are the parameters of `go run ./tools/simulate`.
 func Defaults() Params {
 	return Params{Seed: 1, Stations: 8, Recordings: 6, Events: 300, ManualShare: 0.1, Heterogeneity: 0.15,
-		ChainShift: 0.4, RecordShift: 0.8, Attackers: 2, NoGC: 0.5, GCOutage: 0.05, NewRecordings: 2, NewEvents: 40,
+		ChainShift: 0.4, RecordShift: 0.8, Anchors: 2, Attackers: 2, AttackerTrust: 0.9, NoGC: 0.5, GCOutage: 0.05,
+		NewRecordings: 2, NewEvents: 40,
 		TestRecordings: 20,
 		PriorStrength:  100, L2: 1, ManualWeight: 5}
 }
@@ -405,8 +408,12 @@ func Run(p Params) (*Report, error) {
 		for i := range recs {
 			recs[i] = pr.recording(fv, p, p.Events)
 		}
-		honest = append(honest, hub.Input{StationID: int64(s + 1), ProfileID: fmt.Sprint("honest-", s),
-			Trust: 1, Kind: contribution(fv, p, recs)})
+		in := hub.Input{StationID: int64(s + 1), ProfileID: fmt.Sprint("honest-", s), Trust: cfg.TrustAutoMax,
+			Kind: contribution(fv, p, recs)}
+		if s < p.Anchors {
+			in.Trust, in.Anchor = 1, true
+		}
+		honest = append(honest, in)
 	}
 	attacked := append([]hub.Input(nil), honest...)
 	for a := 0; a < p.Attackers; a++ {
@@ -415,7 +422,7 @@ func Run(p Params) (*Report, error) {
 			bad[i] = -3 * Truth[i]
 		}
 		attacked = append(attacked, hub.Input{StationID: int64(1000 + a), ProfileID: fmt.Sprint("attacker-", a),
-			Trust: cfg.TrustStart, Kind: spec.KindContribution{Coef: bad, NReal: 5_000_000, NFalse: 5_000_000,
+			Trust: p.AttackerTrust, Kind: spec.KindContribution{Coef: bad, NReal: 5_000_000, NFalse: 5_000_000,
 				NManual: 5_000_000, NMaster: 5_000_000, MasterRecordings: 1000, CVErrEst: 0, CVErrRaw: 1}})
 	}
 

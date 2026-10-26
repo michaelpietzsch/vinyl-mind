@@ -27,7 +27,7 @@ func TestRevokeInvitationStations(t *testing.T) {
 	for _, j := range []struct{ fp, code string }{{"fp-a", "code-of-an-account"}, {"fp-b", "code-of-an-account"},
 		{"fp-c", "another-code"}} {
 		code := j.code
-		if _, err := a.store.Join(j.fp, "pk", &code, false, 0.25, nil, now); err != nil {
+		if _, err := a.store.Join(j.fp, "pk", &code, false, 0.25, nil, 0, now); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -46,7 +46,7 @@ func TestRevokeInvitationStations(t *testing.T) {
 		}
 	}
 	code := "code-of-an-account"
-	if _, err := a.store.Join("fp-d", "pk", &code, false, 0.25, nil, now); err == nil {
+	if _, err := a.store.Join("fp-d", "pk", &code, false, 0.25, nil, 0, now); err == nil {
 		t.Error("the revoked code must not admit another station")
 	}
 	if err := a.revokeInvitationStations(999, true, now); err == nil {

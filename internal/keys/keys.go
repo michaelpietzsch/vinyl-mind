@@ -17,6 +17,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"filippo.io/edwards25519"
 )
 
 // JWSType is the "typ" of a signed model.
@@ -55,6 +57,15 @@ func ParsePublic(s string) (ed25519.PublicKey, error) {
 	}
 	if len(b) != ed25519.PublicKeySize {
 		return nil, sigErr("an Ed25519 public key has 32 bytes")
+	}
+	// A key must be a point of the prime-order subgroup: for the eight points of small order one fixed signature
+	// verifies every message, so "signed" would prove nothing about who holds the key
+	p, err := new(edwards25519.Point).SetBytes(b)
+	if err != nil {
+		return nil, sigErr("not a point on the curve")
+	}
+	if new(edwards25519.Point).MultByCofactor(p).Equal(edwards25519.NewIdentityPoint()) == 1 {
+		return nil, sigErr("a point of small order is not a key")
 	}
 	return ed25519.PublicKey(b), nil
 }
@@ -114,7 +125,15 @@ type jwsHeader struct {
 
 // JWSSign signs a model payload with the server key.
 func JWSSign(priv ed25519.PrivateKey, payload []byte) string {
-	h, _ := json.Marshal(jwsHeader{Alg: "EdDSA", Typ: JWSType, Kid: Fingerprint(priv.Public().(ed25519.PublicKey))})
+	return JWSSignTyped(priv, JWSType, payload)
+}
+
+// StateType is the "typ" of the hub's signed statement about a model's status.
+const StateType = "vinyl-mind-state+json"
+
+// JWSSignTyped signs a payload under the given "typ": models, and the hub's statements about them.
+func JWSSignTyped(priv ed25519.PrivateKey, typ string, payload []byte) string {
+	h, _ := json.Marshal(jwsHeader{Alg: "EdDSA", Typ: typ, Kid: Fingerprint(priv.Public().(ed25519.PublicKey))})
 	input := Encode(h) + "." + Encode(payload)
 	return input + "." + Encode(ed25519.Sign(priv, []byte(input)))
 }

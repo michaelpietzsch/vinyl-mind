@@ -41,6 +41,9 @@ type Payload struct {
 	Account      string `json:"account"`
 	Iat          int64  `json:"iat"`
 	Exp          int64  `json:"exp"`
+	// Aud names the hub the binding is for (its canonical URL); optional. A hub with an audience configured
+	// refuses a binding meant for another hub.
+	Aud string `json:"aud,omitempty"`
 }
 
 type header struct {
@@ -60,10 +63,11 @@ func Sign(priv ed25519.PrivateKey, p Payload) (string, error) {
 	return input + "." + keys.Encode(ed25519.Sign(priv, []byte(input))), nil
 }
 
-// Verify checks a binding against the accepted keys (by fingerprint) and the clock. It checks form, header, key
-// and signature before it looks at the content, and refuses anything it does not expect, so that nothing in an
-// unverified binding is ever used.
-func Verify(token string, accepted map[string]ed25519.PublicKey, now time.Time, skew time.Duration) (*Payload, error) {
+// Verify checks a binding against the accepted keys (by fingerprint), the hub's audience (its canonical URL, empty
+// if none is configured) and the clock. It checks form, header, key and signature before it looks at the content,
+// and refuses anything it does not expect, so that nothing in an unverified binding is ever used.
+func Verify(token string, accepted map[string]ed25519.PublicKey, audience string, now time.Time,
+	skew time.Duration) (*Payload, error) {
 	if len(token) > 2048 {
 		return nil, invalid("too long")
 	}
@@ -113,6 +117,8 @@ func Verify(token string, accepted map[string]ed25519.PublicKey, now time.Time, 
 		return nil, invalid("expired")
 	case p.Exp-p.Iat > int64(MaxLifetime/time.Second) || p.Exp <= p.Iat:
 		return nil, invalid("lifetime longer than %s", MaxLifetime)
+	case p.Aud != "" && p.Aud != audience:
+		return nil, invalid("meant for another hub")
 	}
 	return &p, nil
 }

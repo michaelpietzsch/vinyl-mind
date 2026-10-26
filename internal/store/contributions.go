@@ -20,7 +20,9 @@ type Contribution struct {
 	StationID       int64
 	StationFP       string
 	StationStatus   string
+	Account         string
 	Trust           float64
+	TrustOperator   bool
 	ProfileID       string
 	FeatureVersion  int
 	DetectorVersion string
@@ -132,10 +134,10 @@ type rowsQuerier interface {
 }
 
 func (s *Store) contributions(q rowsQuerier, where string, args ...any) ([]Contribution, error) {
-	rows, err := q.Query(s.q(`SELECT c.id, c.station_id, st.key_fp, st.status, st.trust, c.profile_id,
-		c.feature_version, c.detector_version, c.client_name, c.client_version, c.chain_class, c.trained_at,
-		c.received_at FROM contributions c JOIN stations st ON st.id = c.station_id WHERE `+where+
-		` ORDER BY c.id`), args...)
+	rows, err := q.Query(s.q(`SELECT c.id, c.station_id, st.key_fp, st.status, st.account, st.trust,
+		st.trust_operator, c.profile_id, c.feature_version, c.detector_version, c.client_name, c.client_version,
+		c.chain_class, c.trained_at, c.received_at FROM contributions c JOIN stations st ON st.id = c.station_id
+		WHERE `+where+` ORDER BY c.id`), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -145,12 +147,14 @@ func (s *Store) contributions(q rowsQuerier, where string, args ...any) ([]Contr
 		var c Contribution
 		var trained sql.NullInt64
 		var received int64
-		if err := rows.Scan(&c.ID, &c.StationID, &c.StationFP, &c.StationStatus, &c.Trust, &c.ProfileID,
-			&c.FeatureVersion, &c.DetectorVersion, &c.ClientName, &c.ClientVersion, &c.ChainClass, &trained,
-			&received); err != nil {
+		var account sql.NullString
+		if err := rows.Scan(&c.ID, &c.StationID, &c.StationFP, &c.StationStatus, &account, &c.Trust,
+			&c.TrustOperator, &c.ProfileID, &c.FeatureVersion, &c.DetectorVersion, &c.ClientName, &c.ClientVersion,
+			&c.ChainClass, &trained, &received); err != nil {
 			rows.Close()
 			return nil, err
 		}
+		c.Account = account.String
 		if trained.Valid {
 			c.TrainedAt = &trained.Int64
 		}

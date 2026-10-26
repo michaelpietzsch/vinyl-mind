@@ -29,25 +29,24 @@ func TestWaterfill(t *testing.T) {
 }
 
 func TestTrimmedMeanAndQuantile(t *testing.T) {
-	vals, ws := []float64{1, 2, 3, 100}, []float64{0.25, 0.25, 0.25, 0.25}
-	if m := trimmedMean(vals, ws, 0); !near(m, 26.5) {
-		t.Errorf("untrimmed mean %g", m)
+	vals := []float64{1, 2, 3, 4, 100}
+	ws := []float64{1, 1, 1, 1, 1}
+	if m := trimmedMean(vals, ws, 0.2); !near(m, 3) {
+		t.Fatalf("trimmed mean %g", m)
 	}
-	if m := trimmedMean(vals, ws, 0.25); !near(m, 2.5) {
-		t.Errorf("trimmed mean %g", m)
+	if m := trimmedMean(vals, ws, 0); !near(m, 22) {
+		t.Fatalf("untrimmed mean %g", m)
 	}
-	// Partial trimming at the boundary: 10 % off each end of four equal weights
-	if m := trimmedMean(vals, ws, 0.1); !near(m, (0.15*1+0.25*2+0.25*3+0.15*100)/0.8) {
-		t.Errorf("partially trimmed mean %g", m)
+	if q := quantile(vals, ws, 0.5); !near(q, 3) {
+		t.Fatalf("median %g", q)
 	}
-	if q := quantile(vals, ws, 0.5); !near(q, 2.5) {
-		t.Errorf("median of an even count %g", q)
+	if q := quantile([]float64{1, 3}, []float64{1, 1}, 0.5); !near(q, 2) {
+		t.Fatalf("median of two %g", q)
 	}
-	if q := quantile([]float64{1, 2, 3}, []float64{1, 1, 1}, 0.5); !near(q, 2) {
-		t.Errorf("median %g", q)
-	}
-	if q := quantile([]float64{1, 2, 3}, []float64{0.1, 0.1, 0.8}, 0.5); !near(q, 3) {
-		t.Errorf("weighted median %g", q)
+	// A quarter of the weight at an extreme survives the cut in part ((0.25 − 0.2) / 0.6 of it): the residual the
+	// band around the reference exists for
+	if m := trimmedMean([]float64{1, 100}, []float64{3, 1}, 0.2); !near(m, 9.25) {
+		t.Fatalf("weighted trimming %g", m)
 	}
 }
 
@@ -60,22 +59,32 @@ func kind(coef0 float64, nManual, nMaster int, errEst float64) spec.KindContribu
 		NManual: nManual, NMaster: nMaster, MasterRecordings: 4, CVErrEst: errEst, CVErrRaw: 0.5}
 }
 
+// anchors returns n honest stations the operator trusts, at coef0 + 0.05 i.
+func anchors(n int, coef0 float64) []Input {
+	var in []Input
+	for i := int64(1); i <= int64(n); i++ {
+		in = append(in, Input{StationID: i, ProfileID: "honest", Trust: 1, Anchor: true,
+			Kind: kind(coef0+0.05*float64(i), 50, 2000, 0.06)})
+	}
+	return in
+}
+
 func TestCombineExclusionsAndMinimum(t *testing.T) {
 	cfg := config.Default().Aggregation
 	in := []Input{
-		{StationID: 1, ProfileID: "a", Trust: 1, Kind: kind(1, 0, 500, 0.05)},
+		{StationID: 1, ProfileID: "a", Trust: 1, Anchor: true, Kind: kind(1, 0, 500, 0.05)},
 		{StationID: 2, ProfileID: "b", Trust: 1, Kind: kind(1, 0, 500, 0.35)}, // self-check too poor
 		{StationID: 3, ProfileID: "c", Trust: 1, Kind: kind(1, 0, 500, 0.6)},  // not better than raw (0.5)
 		{StationID: 4, ProfileID: "d", Trust: 1, Kind: spec.KindContribution{Coef: []float64{1}}},
-		{StationID: 1, ProfileID: "e", Trust: 1, Kind: kind(1, 0, 500, 0.05)},
+		{StationID: 1, ProfileID: "e", Trust: 1, Anchor: true, Kind: kind(1, 0, 500, 0.05)},
 	}
 	r := Combine(in, cfg, 11)
 	if len(r.Excluded) != 3 || r.Coef != nil || r.Profiles != 2 || r.Stations != 1 {
 		t.Fatalf("two profiles of one station must not make a model: %+v", r)
 	}
-	in = append(in, Input{StationID: 5, ProfileID: "f", Trust: 1, Kind: kind(2, 10, 0, 0.15)})
+	in = append(in, Input{StationID: 5, ProfileID: "f", Trust: 0.9, Kind: kind(2, 10, 0, 0.15)})
 	r = Combine(in, cfg, 11)
-	if r.Coef == nil || r.Profiles != 3 || r.Stations != 2 || !near(r.Examples, 1050) {
+	if r.Coef == nil || r.Profiles != 3 || r.Stations != 2 || r.Anchors != 1 || !near(r.Examples, 1050) {
 		t.Fatalf("three profiles from two stations: %+v", r)
 	}
 	sum := 0.0
@@ -87,12 +96,20 @@ func TestCombineExclusionsAndMinimum(t *testing.T) {
 	}
 }
 
-func TestCombineResistsNewAttackers(t *testing.T) {
+func TestNoAnchorNoModel(t *testing.T) {
 	cfg := config.Default().Aggregation
 	var in []Input
-	for i := int64(1); i <= 5; i++ {
-		in = append(in, Input{StationID: i, ProfileID: "honest", Trust: 1, Kind: kind(1+0.05*float64(i), 50, 2000, 0.06)})
+	for i := int64(1); i <= 8; i++ {
+		in = append(in, Input{StationID: i, ProfileID: "p", Trust: cfg.TrustAutoMax, Kind: kind(1, 50, 2000, 0.06)})
 	}
+	if r := Combine(in, cfg, 11); r.Coef != nil || r.Reason == "" {
+		t.Fatalf("eight stations without one the operator trusts must not make a model: %+v", r.Reason)
+	}
+}
+
+func TestCombineResistsNewAttackers(t *testing.T) {
+	cfg := config.Default().Aggregation
+	in := anchors(5, 1)
 	// Two new stations claim enormous evidence and a perfect self-check for a model pointing the other way
 	for i := int64(6); i <= 7; i++ {
 		in = append(in, Input{StationID: i, ProfileID: "bad", Trust: cfg.TrustStart,
@@ -105,37 +122,128 @@ func TestCombineResistsNewAttackers(t *testing.T) {
 			t.Errorf("%s: combination dragged to %g by two new stations", method, r.Coef[3])
 		}
 		for _, u := range r.Used {
-			if u.StationID >= 6 && u.Share > cfg.MaxStationShare*cfg.TrustStart+1e-9 {
-				t.Errorf("%s: new station got share %g", method, u.Share)
+			if u.StationID >= 6 && (u.Share > cfg.NewcomerShare/2+1e-9 || !u.Far || u.Clipped != 11) {
+				t.Errorf("%s: new station share %g far %v clipped %d", method, u.Share, u.Far, u.Clipped)
 			}
 		}
 	}
 }
 
-func TestFar(t *testing.T) {
-	combined, spread := make([]float64, 11), make([]float64, 11)
-	for i := range spread {
-		spread[i] = 0.5
+// The review's scenarios S6, S8 and S10: stations that earned the most automatic trust and then turn, alone or
+// together, on all coefficients or on a few. Held in the band, they move no coefficient by more than a fraction of
+// the band, and the ones that turned on several coefficients are far.
+func TestTrustedColludersAreHeld(t *testing.T) {
+	cfg := config.Default().Aggregation
+	honest := anchors(1, 1) // the operator's one station
+	for i := int64(2); i <= 9; i++ {
+		honest = append(honest, Input{StationID: i, ProfileID: "p", Trust: cfg.TrustAutoMax,
+			Kind: kind(1+0.05*float64(i%3), 50, 2000, 0.06)})
 	}
-	close, distant := kind(0.4, 0, 500, 0.05), kind(2, 0, 500, 0.05)
-	distant.Coef[0] = 0
-	if far(close, combined, spread, 3) || !far(distant, combined, spread, 3) {
-		t.Fatal("far must look at the typical coefficient, not a single one")
+	base := Combine(honest, cfg, 11)
+	cases := map[string][]Input{}
+	for n := 1; n <= 4; n++ {
+		var bad []Input
+		for i := int64(100); i < int64(100+n); i++ {
+			bad = append(bad, Input{StationID: i, ProfileID: "p", Trust: cfg.TrustAutoMax, Kind: kind(50, 1_000_000, 1_000_000, 0)})
+		}
+		cases[string(rune('0'+n))+" colluders at +50"] = bad
 	}
-	// Weights a profile did not learn are the prior's: being far there says nothing about the profile
-	lagging := kind(0.4, 0, 500, 0.05)
-	lagging.Informative = make([]bool, 10)
+	one := Input{StationID: 100, ProfileID: "p", Trust: cfg.TrustAutoMax, Kind: kind(1, 1_000_000, 1_000_000, 0)}
+	one.Kind.Coef = append([]float64(nil), one.Kind.Coef...)
+	one.Kind.Coef[1] = 50
+	cases["one coefficient at +50"] = []Input{one}
+	five := Input{StationID: 100, ProfileID: "p", Trust: cfg.TrustAutoMax, Kind: kind(1, 1_000_000, 1_000_000, 0)}
+	five.Kind.Coef = append([]float64(nil), five.Kind.Coef...)
+	for j := 1; j <= 5; j++ {
+		five.Kind.Coef[j] = 50
+	}
+	cases["five coefficients at +50"] = []Input{five}
+	for name, bad := range cases {
+		r := Combine(append(append([]Input(nil), honest...), bad...), cfg, 11)
+		for j := range r.Coef {
+			if d := math.Abs(r.Coef[j] - base.Coef[j]); d > 0.3 {
+				t.Errorf("%s: coefficient %d moved by %.3f", name, j, d)
+			}
+		}
+		for _, u := range r.Used {
+			if u.StationID >= 100 && !u.Far && u.Clipped >= farCount {
+				t.Errorf("%s: station %d clipped on %d coefficients but not far", name, u.StationID, u.Clipped)
+			}
+		}
+	}
+}
+
+// An anchor that turns is held to the other anchors and reported as far; it is never demoted here, that is the
+// operator's call, but it cannot carry the model away either.
+func TestColludingAnchorIsHeld(t *testing.T) {
+	cfg := config.Default().Aggregation
+	in := anchors(3, 1)
+	base := Combine(in, cfg, 11)
+	in = append(in, Input{StationID: 4, ProfileID: "p", Trust: 1, Anchor: true, Kind: kind(50, 1_000_000, 1_000_000, 0)})
+	r := Combine(in, cfg, 11)
+	for j := range r.Coef {
+		if d := math.Abs(r.Coef[j] - base.Coef[j]); d > 0.3 {
+			t.Errorf("coefficient %d moved by %.3f", j, d)
+		}
+	}
+	if u := r.Used[3]; !u.Far || u.Clipped != 11 {
+		t.Fatalf("the turned anchor: far %v clipped %d", u.Far, u.Clipped)
+	}
+	if r.Used[0].Far || r.Used[0].Clipped != 0 {
+		t.Fatal("an honest anchor is not far from the others")
+	}
+}
+
+func TestHold(t *testing.T) {
+	ref, band := make([]float64, 11), make([]float64, 11)
+	for j := range band {
+		band[j] = 0.75
+	}
+	known := make([]bool, 11)
+	for j := range known {
+		known[j] = true
+	}
+	u := Used{Input: Input{Kind: kind(0.4, 0, 500, 0.05)}, Coef: make([]float64, 11)}
+	copy(u.Coef, u.Kind.Coef)
+	hold(&u, ref, band, known)
+	if u.Far || u.Clipped != 0 {
+		t.Fatal("inside the band nothing happens")
+	}
+	u.Kind.Coef[2] = 5
+	u.Coef[2] = 5
+	hold(&u, ref, band, known)
+	if u.Far || u.Clipped != 1 || !near(u.Coef[2], 0.75) {
+		t.Fatalf("one outlier is pulled in and forgiven: far %v clipped %d coef %g", u.Far, u.Clipped, u.Coef[2])
+	}
+	u.Kind.Coef[3], u.Coef[3], u.Clipped = -5, -5, 0
+	hold(&u, ref, band, known)
+	if !u.Far || u.Clipped != 2 || !near(u.Coef[3], -0.75) {
+		t.Fatalf("two outliers are a pattern: far %v clipped %d", u.Far, u.Clipped)
+	}
+	// A coefficient no anchor learned holds nobody
+	known[3] = false
+	u.Coef[3], u.Clipped = -5, 0
+	hold(&u, ref, band, known)
+	if u.Far || u.Clipped != 1 {
+		t.Fatalf("unknown coefficient: far %v clipped %d", u.Far, u.Clipped)
+	}
+	known[3] = true
+	// Weights a profile did not learn are the prior's: being outside there is pulled in but not held against it
+	masked := Used{Input: Input{Kind: kind(0.4, 0, 500, 0.05)}, Coef: make([]float64, 11)}
+	masked.Kind.Informative = make([]bool, 10)
+	masked.Kind.Informative[8], masked.Kind.Informative[9] = true, true
 	for j := 1; j <= 7; j++ {
-		lagging.Coef[j] = 2
+		masked.Kind.Coef[j] = 5
 	}
-	lagging.Informative[8], lagging.Informative[9] = true, true
-	if far(lagging, combined, spread, 3) {
-		t.Fatal("far must ignore the weights a profile did not learn")
+	copy(masked.Coef, masked.Kind.Coef)
+	hold(&masked, ref, band, known)
+	if masked.Far || masked.Clipped != 7 {
+		t.Fatalf("masked positions: far %v clipped %d", masked.Far, masked.Clipped)
 	}
 }
 
 // Most stations have no second opinion: their gc weights are only the prior's and must not drag the weight that
-// the few stations with one learned. Below the minimum, the weight is combined from all and so stays near the prior.
+// the few stations with one learned. A weight that no anchor learned stays what the anchors sent (review B-7).
 func TestUninformativeWeights(t *testing.T) {
 	cfg := config.Default().Aggregation
 	var in []Input
@@ -147,13 +255,14 @@ func TestUninformativeWeights(t *testing.T) {
 		} else {
 			k.Coef[4], k.Coef[5] = 2+0.05*float64(i), -1
 		}
-		in = append(in, Input{StationID: i, ProfileID: "p", Trust: 1, Kind: k})
+		in = append(in, Input{StationID: i, ProfileID: "p", Trust: cfg.TrustAutoMax, Kind: k})
 	}
+	in[0].Anchor, in[0].Trust = true, 1 // one anchor with a second opinion
+	in[3].Anchor, in[3].Trust = true, 1 // one without
 	r := Combine(in, cfg, 11)
 	if r.Coef[4] < 2 || r.Coef[4] > 2.2 || !near(r.Coef[5], -1) || r.Basis[4] != 3 || r.Basis[1] != 8 {
 		t.Fatalf("learned weights %v, basis %v", r.Coef, r.Basis)
 	}
-	// The weights every station learned are combined from all, as before
 	if !near(r.Coef[1], 1) {
 		t.Fatalf("other weights changed: %v", r.Coef)
 	}
@@ -163,48 +272,63 @@ func TestUninformativeWeights(t *testing.T) {
 		t.Fatalf("short mask: %+v", r.Excluded)
 	}
 	in[1].Kind.Informative = nil
+	// No anchor learned the weight: two newcomers with a second opinion cannot define it, it stays the prior
 	in[0].Kind.Informative = []bool{true, true, true, false, false, true, true, true, true, true}
 	in[0].Kind.Coef[4], in[0].Kind.Coef[5] = 0, 0
+	in[1].Kind.Coef[4], in[2].Kind.Coef[4] = 50, 50
 	r = Combine(in, cfg, 11)
-	if r.Basis[4] != 0 || math.Abs(r.Coef[4]) > 0.5 {
-		t.Fatalf("two stations are below the minimum of three profiles: %v, basis %v", r.Coef[4], r.Basis)
+	if r.Basis[4] != 0 || !near(r.Coef[4], 0) {
+		t.Fatalf("a weight no anchor learned: %v, basis %v", r.Coef[4], r.Basis)
 	}
 }
 
 func TestManyNewStationsTogetherAreCapped(t *testing.T) {
 	cfg := config.Default().Aggregation
-	var in []Input
-	for i := int64(1); i <= 4; i++ {
-		in = append(in, Input{StationID: i, ProfileID: "honest", Trust: 1, Kind: kind(1+0.05*float64(i), 50, 2000, 0.06)})
-	}
-	// Twenty cheap new stations, each claiming far more examples than the cap allows
+	in := anchors(4, 1)
+	// Twenty cheap new stations, each claiming far more examples than the cap allows, with sixteen profiles
 	for i := int64(100); i < 120; i++ {
-		in = append(in, Input{StationID: i, ProfileID: "sybil", Trust: cfg.TrustStart,
-			Kind: kind(-5, 1_000_000, 1_000_000, 0)})
+		for p := 0; p < 16; p++ {
+			in = append(in, Input{StationID: i, ProfileID: string(rune('a' + p)), Trust: cfg.TrustStart,
+				Kind: kind(-5, 1_000_000, 1_000_000, 0)})
+		}
 	}
 	r := Combine(in, cfg, 11)
 	newShare := 0.0
+	perStation := map[int64]float64{}
 	for _, u := range r.Used {
 		if u.StationID >= 100 {
 			newShare += u.Share
-			if u.Evidence > cfg.MaxEvidence {
-				t.Fatalf("evidence above the cap: %g", u.Evidence)
-			}
+			perStation[u.StationID] += u.Evidence
 		}
 	}
 	if !near(newShare, cfg.NewcomerShare) {
 		t.Fatalf("new stations together got %g, want %g", newShare, cfg.NewcomerShare)
+	}
+	for id, e := range perStation {
+		if e > 2*cfg.MaxEvidence+1e-9 {
+			t.Fatalf("station %d claims %g examples across its profiles", id, e)
+		}
 	}
 	if r.Coef[3] < 1.0 || r.Coef[3] > 1.25 {
 		t.Fatalf("twenty new stations moved the combination to %g", r.Coef[3])
 	}
 }
 
-func TestOnlyNewStationsAreNotCappedAsAGroup(t *testing.T) {
+func TestNewcomersShareEqually(t *testing.T) {
 	cfg := config.Default().Aggregation
-	share := map[int64]float64{1: 0.5, 2: 0.5}
-	limitNewcomers(share, map[int64]float64{1: 0.25, 2: 0.25}, cfg)
-	if !near(share[1], 0.5) {
-		t.Fatal("without established stations the group cap has nobody to protect")
+	in := anchors(1, 1)
+	in = append(in,
+		Input{StationID: 10, ProfileID: "p", Trust: 0.25, Kind: kind(1, 0, 20, 0.1)},
+		Input{StationID: 11, ProfileID: "p", Trust: 0.9, Kind: kind(1, 1000, 100000, 0)},
+		Input{StationID: 12, ProfileID: "p", Trust: 0.5, Kind: kind(1, 10, 500, 0.05)})
+	r := Combine(in, cfg, 11)
+	for _, u := range r.Used {
+		want := 1 - cfg.NewcomerShare
+		if !u.Anchor {
+			want = cfg.NewcomerShare / 3
+		}
+		if !near(u.Share, want) {
+			t.Fatalf("station %d: share %g, want %g", u.StationID, u.Share, want)
+		}
 	}
 }

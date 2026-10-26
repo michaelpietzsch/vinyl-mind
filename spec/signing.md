@@ -56,14 +56,15 @@ vinyl-mind-request-v1
 
 The server rejects a request whose timestamp is more than 300 seconds off its own clock, a nonce it has seen from
 the same key within that window, a signature that does not verify, and a key that is unknown, still waiting for
-approval (except for `GET /v1/me`) or revoked. The server fingerprint in the message binds a request to one server:
-a request recorded on one server is worthless on another.
+approval (except for `GET /v1/me` and `DELETE /v1/me`) or revoked. The server fingerprint in the message binds a
+request to one server: a request recorded on one server is worthless on another.
 
 The path is signed as the station sends it, so a reverse proxy in front of the server must pass the path on
 unchanged. Serving Vinyl-Mind at the root of its own host name avoids any rewriting.
 
 **Joining** (`POST /v1/join`) uses the same headers. The key header must be the fingerprint of the `public_key` in
-the body, and the signature is verified with that key, which proves that the station holds the private key.
+the body, and the signature is verified with that key, which proves that the station holds the private key. A
+public key that is a point of small order is refused: for those, one signature fits every message.
 
 ## Signed models
 
