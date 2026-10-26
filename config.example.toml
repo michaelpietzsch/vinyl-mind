@@ -60,3 +60,4 @@ connect_url = ""                  # e.g. "https://accounts.example.org/connect/"
 binding_keys = []                 # public keys of the account service, base64url (32 bytes)
 audience = ""                     # this hub's canonical URL, e.g. "https://hub.example.org": a binding that names a
                                   # hub (aud) is accepted only for this one
+audience_required = false         # true once every account service names the hub: bindings without aud are refused

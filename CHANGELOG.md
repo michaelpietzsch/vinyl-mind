@@ -27,7 +27,8 @@ The findings of the security review of 26 October 2026 (hub protocol and aggrega
   a day beyond their expiry.
 - **Operator.** `vinyl-mind events` (the event log: joins, departures, trust changes, publications, commands),
   `vinyl-mind status [-prom]` (counts for a textfile collector), `trust <fp> auto`, the publication settings in the
-  startup log. Bindings may name the hub (`aud`), checked against `[accounts] audience`.
+  startup log. Bindings may name the hub (`aud`), checked against `[accounts] audience`; `audience_required`
+  refuses bindings that do not, once every account service names the hub.
 - Documentation: the public hub the author runs, and that vinyl-check 1.1.0 implements the station side.
 
 ## 0.1.7 – 2026-10-25

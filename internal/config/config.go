@@ -93,8 +93,10 @@ type Accounts struct {
 	ConnectURL  string   `toml:"connect_url"`  // where stations connect by signing in; empty: no account service
 	BindingKeys []string `toml:"binding_keys"` // public keys (base64url, 32 bytes) whose bindings are accepted
 	// Audience is this hub's canonical URL (for example "https://hub.example.org"). A binding that names a hub
-	// (aud) is accepted only if it names this one; without an audience such bindings are refused.
-	Audience string `toml:"audience"`
+	// (aud) is accepted only if it names this one; without an audience such bindings are refused. With
+	// AudienceRequired every binding must name the hub, once every account service does.
+	Audience         string `toml:"audience"`
+	AudienceRequired bool   `toml:"audience_required"`
 }
 
 // Config is the whole configuration.
@@ -238,6 +240,8 @@ func (c *Config) Check() error {
 			p.Fragment != "" || strings.ToLower(u) != u {
 			bad("accounts.audience must be this hub's canonical URL (https, lower case, no path), not %q", u)
 		}
+	} else if c.Accounts.AudienceRequired {
+		bad("accounts.audience_required needs accounts.audience")
 	}
 	c.bindingKeys = map[string]ed25519.PublicKey{}
 	for _, k := range c.Accounts.BindingKeys {

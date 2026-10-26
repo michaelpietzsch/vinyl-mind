@@ -84,7 +84,9 @@ func (s *Server) join(w http.ResponseWriter, r *http.Request) {
 			}
 			return "", nil
 		}
-		p, err := binding.Verify(*req.Binding, s.cfg.BindingKeys(), s.cfg.Accounts.Audience, now, s.cfg.ClockSkew())
+		p, err := binding.Verify(*req.Binding, s.cfg.BindingKeys(),
+			binding.Audience{URL: s.cfg.Accounts.Audience, Required: s.cfg.Accounts.AudienceRequired}, now,
+			s.cfg.ClockSkew())
 		switch {
 		case err != nil:
 			s.log.Warn("binding refused", "station", sig.KeyFP, "reason", err)
