@@ -21,16 +21,17 @@ starting point of its own training, and only if it does well on the station's ow
   themselves.
 - **Every request and every model is signed.** Stations sign with their own Ed25519 key, the hub signs models with
   its key; joining needs an invitation ([security](docs/security.md)).
-- **No single station can steer the result.** Weighted by examples and self-check, capped per station by trust,
-  combined by a trimmed mean, published only when most stations that tried it found it no worse
+- **No station can steer the result but the operator's own.** The stations the operator vouches for are the
+  reference: every other contribution is held within a band around them and all of them together add a fifth,
+  whatever they claim; a model is published only when the operator's stations that tried it found it no worse
   ([aggregation](docs/aggregation.md)).
 - **Anyone can run a hub.** Nothing depends on a particular server; a studio can run one for its own stations
   ([operations](docs/operations.md)).
 
-In a simulation with eight stations, half of them without a second opinion, attackers claiming millions of examples
-hardly move the combined model (two of them as little as forty), and a new turntable profile with only 80
-judgements estimates the number of real clicks with about 13 % error instead of 25 % when it starts from the global
-model ([aggregation](docs/aggregation.md)).
+In a simulation with eight honest stations, two of them the operator's, attackers claiming millions of examples do
+not move the combined model, twenty of them no more than two, and a new turntable profile with only 80 judgements
+estimates the number of real clicks with about 12 % error instead of 25 % when it starts from the global model
+([aggregation](docs/aggregation.md)).
 
 ## The public hub
 

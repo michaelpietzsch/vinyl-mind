@@ -43,43 +43,56 @@ The quality factor falls to zero at the limit, so there is no jump between a pro
 that is just left out. The counts are what a station claims, not what anyone can check, so beyond `max_evidence`
 more claims buy no more weight.
 
-### Limited influence per station
+A station's claim is bounded across all its profiles as well: together they count at most twice `max_evidence`,
+so sixteen profiles do not buy sixteen times the weight of one.
 
-The weights of a station's profiles are added up, and each station's **share** of the total is capped:
+### The operator's anchors
 
-```
-cap = max_station_share × trust        (max_station_share = 0.25)
-```
+Everything in a contribution is the station's own word. The one thing the hub can rely on is the operator's word
+about stations he knows: **anchors** are stations whose trust the operator set to the full level
+(`vinyl-mind trust <fingerprint> 1`). Automatic trust never gets there (`trust_auto_max`, 0.9), so no station can
+become an anchor by behaving well for a while. The anchors are the reference for everything:
 
-Shares follow the weights; what a capped station would get beyond its cap goes to the others in proportion
-(water-filling). If the caps together are below 1, which happens with few stations or many new ones, every station
-is at its cap and the shares follow the caps, that is, the trust. Within a station, its profiles share its part
-by weight.
+- **No anchor, no model.** A kind is combined only with at least one anchor among its usable profiles, in every
+  group, every chain class and (below) every set of profiles a weight is combined from. A group of newcomers alone
+  cannot make a model, not even for a chain class of their own.
+- **Shares.** The anchors share `1 − newcomer_share` (80 %) among themselves by their weight, each capped at
+  `max_station_share` (0.25) of that part (water-filling: what a capped station would get beyond its cap goes to
+  the others; if the caps together are below the part, every anchor is at its cap). **All other stations share
+  `newcomer_share` (20 %) in equal parts**, whatever they claim and however many they are: neither many stations
+  nor big claims buy more than an equal part of a fifth. Within a station, its profiles share its part by weight.
+- **The band.** Per coefficient, the reference is the median over the anchors that learned the coefficient (see
+  *informative* below), and the band around it is `consistency_k` (3) robust spreads wide; with fewer than three
+  anchors there is no spread to measure and `consistency_floor` (0.25) stands in, with more it is their median
+  absolute deviation, which a minority of them cannot inflate. **Every other station's coefficients are pulled
+  into the band** before anything is combined (winsorising), and an anchor is held to the band of the other
+  anchors. What a station claims beyond the band is never averaged in: the influence of one contribution is
+  bounded by the band, not by the ±50 of the specification. A station outside the band on two or more of the
+  coefficients it learned is **far** from the reference.
 
-Tying the cap to trust keeps a single new station small: it starts at `trust_start` (0.25) and so has at most
-6.25 % of the mean, however many examples it claims. A fixed cap alone would not be enough: two fake stations at
-25 % each would hold half the mean, more than any trimming removes.
-
-### All new stations together
-
-Capping each new station is not enough either when stations are cheap to make, for example with sign-up on a
-website. Twenty new stations at 6.25 % each would together outweigh everyone else. So **all stations below
-`newcomer_trust` (full trust, 1.0) together get at most `newcomer_share` (20 %)** of the mean; the relations within
-each group stay as they were. One-sided 20 % is exactly what the trimmed mean cuts off.
-
-While every station is new, at the very start, there is no established group to protect, and the group cap does
-nothing. The operator therefore marks the stations he knows as trusted (`vinyl-mind trust <fingerprint> 1`).
-Trust earned by consistency alone is cheap to fake (a station can send back the published model), which is why
-only full trust leaves the new group, and why trust grows by at most one step a day.
+The price: the global model stays close to the anchors' model, and the others add at most a fifth. That is the
+point. Trust earned by consistency alone is cheap to fake (a station can send back the published model), and the
+alternative, letting earned trust define the reference, lets whoever earns it first define it for everyone.
 
 ### Trust
 
-- A station whose contribution lies **far from the combination** loses `trust_penalty` (0.15) at once, down to
-  `trust_min` (0.05). Far means: the median over the coefficients it learned (see *informative* below) of the
-  distance to the combined coefficient, measured in spreads (with a floor of 0.1), is above `consistency_k` (3).
-- A station whose contributions are consistent, or whose check reports agree with the decision on a model, gains
-  `trust_step` (0.1), **at most once per day**, up to 1. Sending often does not earn trust faster.
-- Trust is judged on the model over all chain classes only, so that one contribution is not counted twice.
+Trust that the operator gave never changes by itself: an anchor far from the other anchors is reported in the
+log and the event log (`anchor_far`), not demoted, so that no group of stations can push the reference aside.
+Lowering it is the operator's call. Automatic trust:
+
+- falls by `trust_penalty` (0.15) for a contribution far from the reference, **at most once a day and only for a
+  contribution that changed** since the last penalty, down to `trust_min` (0.05);
+- rises by `trust_step` (0.1) for a consistent contribution, or for a check report that agrees with the decision
+  on a model (for stations that contribute), **at most once a day**, up to `trust_auto_max` (0.9), never to the
+  full level: that stays the operator's to give;
+- is judged on the model over all chain classes only, so that one contribution is not counted twice, and only
+  when that model has an anchor;
+- is kept for a station that leaves: a key or account that comes back within 30 days starts with the trust it
+  had, and the key with its age.
+
+Every change is logged with its reason (`vinyl-mind events`). The hub combines twice per run: the first pass
+judges and settles the trust, the second builds the candidates, so that a station just caught far from the
+reference does not shape the model it was caught by.
 
 ## Combining
 
@@ -101,11 +114,15 @@ If they are fewer than `min_profiles` or come from fewer than `min_stations` sta
 all profiles, which for the others is the prior again: it moves little until enough stations see it. The intercept
 is always learned.
 
-A model is a **candidate** when it is built. A new candidate is only built when the contributions of the group or
-the aggregation settings changed since the last model (the inputs hash); an older candidate of the same group is
-then superseded. The background job combines every `combine_interval_s` (1 hour); `vinyl-mind combine` does it at
-once (`-dry-run` shows the result without storing anything). Before a model is stored, it is validated against
-`spec/v1/global-model.schema.json` like a station would, and signed with the server key.
+A model is a **candidate** when it is built. A new candidate is only built when the combination itself changed
+since the last model (a hash over the rounded coefficients, spreads and counts, with the aggregation settings), so
+a changed contribution that changes nothing, because it was left out or pulled to the same place, builds nothing.
+A candidate is **under review** for `review_hours` (48): it is not replaced before that, and a new combination that
+differs from it by at most 0.02 on every coefficient keeps it afterwards too, so that the reports already given
+keep their meaning and nobody pushes a candidate out by nudging a contribution every hour. The background job
+combines every `combine_interval_s` (1 hour); `vinyl-mind combine` does it at once (`-dry-run` shows the result
+without storing anything). Before a model is stored, it is validated against `spec/v1/global-model.schema.json`
+like a station would, and signed with the server key. The model records which stations and accounts are behind it.
 
 ## Publishing and withdrawing
 
@@ -119,23 +136,34 @@ per profile and model.
 
 **Each station has one vote**: the majority of its profiles' verdicts, and no vote on a tie. Counting profiles
 instead would let a station that invents profiles decide alone; profiles that only report also count against the
-station's profile limit (`max_profiles_per_station`). **A vote weighs as much as the station's trust**, and only
-stations that joined at least `min_vote_age_days` (7) days ago vote: many new stations cannot decide about a model
-that established ones have checked.
+station's profile limit (`max_profiles_per_station`). Only stations that joined at least `min_vote_age_days` (7)
+days ago vote. **What decides is the anchors' word**: the votes of all stations are counted and shown, but a
+report is only a claim, and claims from stations nobody vouches for can neither publish a model nor take one away.
+**A station whose contribution is in the model, or that shares an account with one, cannot vote for it**; its
+good word is not even a report. It can vote against it.
 
 | Situation | Rule (with `auto = true`) |
 |---|---|
-| reports from at least `min_reports` (3) profiles of at least `min_report_stations` (2) voting stations, and the trust of the stations finding a candidate not worse outweighs the trust of those finding it worse | published |
-| the same number of reports, and the trust of the stations finding a candidate or a published model worse outweighs the others | withdrawn |
-| equal weight on both sides, or not enough reports yet | wait for the next report |
+| the candidate is at least `review_hours` (48) old, reports from at least `min_reports` (3) profiles of at least `min_report_stations` (2) voting stations are in, and the anchors finding it not worse outweigh the anchors finding it worse | published |
+| the same number of reports, and the anchors finding a candidate or a published model worse outweigh the anchors finding it not worse | withdrawn |
+| equal weight, no anchor has spoken, or not enough reports yet | wait for the next report |
 
-The newest published model of a group is the one stations get; when it is withdrawn, the previous published one
-is current again. The operator can publish or withdraw by hand (`vinyl-mind publish`, `vinyl-mind withdraw`), which
-matters at the start, when there are not yet enough stations to report.
+The review window gives every station that wants to a chance to check a candidate before it is published; the
+first three reports do not decide. A candidate that has reached the age is decided at the next background run,
+not only when a report arrives. **A withdrawal does not bring an older model back**: the published model is the
+one published last, as long as it is still published; after a withdrawal stations fall back to their local models
+until the operator publishes something (`vinyl-mind publish`). Every answer about a model carries the hub's signed
+statement of its status (`state_jws`), so that a status cannot be changed on the way without the server key.
+
+`publication.auto = false` turns the automatic part off; then only `vinyl-mind publish` and `withdraw` change a
+model's status.
+
+The operator can publish or withdraw by hand (`vinyl-mind publish`, `vinyl-mind withdraw`), which matters at the
+start, when there are not yet enough stations to report, and after a withdrawal.
 
 A station adopts a published model only if it is not worse on its own master recordings either (principle 4 of
-the concept). Together with the limited influence above, a poisoned model cannot spread silently: it would have to
-pass the robust combination and then the checks of most stations.
+the concept). Together with the band around the anchors, a poisoned model cannot spread silently: it would have
+to pass the anchors' band, the anchors' own checks over two days, and then every station's check of its own.
 
 ## What the simulation shows
 
@@ -143,28 +171,42 @@ pass the robust combination and then the checks of most stations.
 (ridge-penalised logistic regression, Newton's method, judgements by hand five times, cross-check by leaving out
 one recording with a master), each chain shifts the features differently, and each record has its own mix of
 music, crackle and loud passages. Eight honest stations with six recordings of 300 detections each contribute;
-half of them have no second opinion, the others miss it for 5 % of the events. Two new stations send a reversed
+half of them have no second opinion, the others miss it for 5 % of the events; two of the eight are the operator's
+anchors, the other six have earned the automatic maximum (0.9). Two attackers that also earned 0.9 send a reversed
 model claiming ten million examples and a perfect self-check. A new profile without a second opinion and with only
-2 × 40 judged detections is then measured on 20 recordings it has not seen. A second run has twenty attackers
-instead of two.
+2 × 40 judged detections is then measured on 20 recordings it has not seen. Further runs have twenty attackers
+instead of two, and two fresh ones at trust 0.25.
 
 Over 20 random seeds (median):
 
 | | |
 |---|---|
-| distance of the combination to the truth, honest stations only | 0.060 |
-| the same, if weights a profile did not learn were averaged in | 0.112 |
-| the same with the two attackers | 0.070 |
-| the same with twenty attackers, as automatic sign-up could make them | 0.094 |
-| the same with a plain weighted mean (no caps, no trimming, no self-check filter) | 2.40 |
+| distance of the combination to the truth, honest stations only | 0.203 |
+| the same with the two attackers (trust 0.9) | 0.205 |
+| the same with twenty attackers | 0.211 |
+| the same with two fresh attackers (trust 0.25) | 0.205 |
+| the same with a plain weighted mean (no anchors, no band, no caps) | 2.40 |
 | new profile, raw count | 216 % off |
 | new profile, its own model only | 25 % off |
 | new profile, global model as it is | 12 % off |
-| new profile, own model with the global model as prior | 13 % off, better than its own model in 18 of 20 seeds |
+| new profile, own model with the global model as prior | 12 % off, better than its own model in 19 of 20 seeds |
 | new profile, own model with the plain mean as prior | 146 % off |
 
-In the two seeds where the prior did not help, the profile's own model happened to be good already (8 % and 12 %
-off); the station's check on its own recordings is there to catch exactly that.
+The attackers no longer move the model: held in the band and limited to an equal part of a fifth, two or twenty of
+them, patient or fresh, cost between 0.002 and 0.008. What the model costs is the anchors: it is built around them,
+and two stations' models are two stations' models. With more anchors it gets closer to the truth, and the attackers
+still get nowhere:
+
+| anchors among the eight honest stations | honest only | with two attackers | new profile with the prior |
+|---|---|---|---|
+| 1 | 0.243 | 0.243 | 16 % off, better in 16 of 20 seeds |
+| 2 (the run above) | 0.203 | 0.205 | 12 % off, better in 19 of 20 seeds |
+| 4 | 0.176 | 0.177 | 11 % off, better in 19 of 20 seeds |
+| 8 | 0.060 | 0.092 | 13 % off, better in 18 of 20 seeds |
+
+That is the operator's lever: every honest station he marks as an anchor improves the model for everyone, and
+nothing a station does on its own can take an anchor's place. Where the prior did not help, the profile's own model
+happened to be good already; the station's check on its own recordings is there to catch exactly that.
 
 Two findings from the simulation shape the station side (`docs/station-side.md`):
 

@@ -20,15 +20,17 @@ are reported privately, see [SECURITY.md](../SECURITY.md).
 | someone on the network reads or changes traffic | TLS at the reverse proxy; on top, every request is signed by the station and every model by the server, so a changed request or model is refused even if TLS were broken |
 | a recorded request is sent again | timestamp within ±300 s and a nonce that is accepted only once per key; the server key's fingerprint is part of the signed message, so a request is worthless on another server |
 | the server's database is copied | it holds only public keys and hashes of invitation codes: nothing that lets anyone act as a station or join |
-| many fake stations | joining needs an invitation code (or the operator's approval); joins are rate-limited per address and per day for the whole server; all new stations together get at most 20 % of a model, which the trimmed mean cuts off; their votes count only after seven days and weigh by trust; claimed example counts are capped |
-| a station sends bad or deliberately wrong weights | self-check filter, robust combination (trimmed mean or median), each station's share capped at 25 % × trust, new stations start at trust 0.25; far-off contributions cost trust at once (`docs/aggregation.md`) |
+| many fake stations | joining needs an invitation code (or the operator's approval); joins are rate-limited per address (IPv6: per /64) and per day for the whole server, counted inside the join; all stations the operator has not vouched for share 20 % of a model in equal parts, whatever they claim; their votes decide nothing; claimed example counts are capped per profile and per station (`docs/aggregation.md`) |
+| a station sends bad or deliberately wrong weights | self-check filter; every contribution is pulled into a band around the operator's anchors before it is combined, so its influence is bounded by the band, not by the coefficient bound; robust combination (trimmed mean or median); a contribution outside the band on two or more coefficients costs trust, once a day; automatic trust never reaches the anchors' level |
+| patient stations that behave well and then turn | automatic trust stops below the full level, so they stay in the 20 % group; a model needs an anchor; anchors are never demoted automatically; a candidate is published only after the review window, and only by anchors that did not contribute to it |
 | an invitation from an account service is intercepted | it travels only from the account service to the station (PKCE, never in a URL), and it is bound to the station's key by a signed binding: no other key can use it (`docs/connect.md`) |
 | the account service is broken into | the hub has no endpoint for it; the damage is the few invitations in its pool, each revocable, and its signing key alone gives nothing without them |
-| a station tries to decide about a model alone | one vote per station on check reports, decisions need several stations, profiles that only report count against the profile limit |
-| a poisoned model gets published anyway | every station checks a model on its own recordings before it uses it, and reports; a model worse for most stations is withdrawn |
+| a station tries to decide about a model alone | one vote per station on check reports, decisions need several stations and the anchors' word; contributors cannot vote for their own candidate; profiles that only report count against the profile limit |
+| a poisoned model gets published anyway | every station checks a model on its own recordings before it uses it, and reports; a model the anchors find worse is withdrawn, and a withdrawal does not bring an older model back by itself |
+| a key that is no key | public keys of small order (for which one signature fits every message) are refused at the join |
 | a station is compromised | the operator revokes its key (`vinyl-mind revoke`); its contributions and reports are deleted at once |
 | the server is compromised | the attacker can sign models. Stations still adopt a model only if it does well on their own recordings. The key lives only in the data directory and its encrypted backup |
-| the network is flooded | body limit 16 KiB, header limit 16 KiB, tight timeouts, token buckets per address and per station, a profile limit per station; nothing grows without bound (nonces expire, the access log is pruned) |
+| the network is flooded | body limit 16 KiB, header limit 16 KiB, only plain JSON, tight timeouts, token buckets per address and per station (a replay does not use the station's quota), a profile limit per station; refused requests of unknown senders are counted per address, not listed; nothing grows without bound (nonces expire, the access log is pruned and capped) |
 
 ## OWASP API Security Top 10 (2023)
 
@@ -68,8 +70,11 @@ are reported privately, see [SECURITY.md](../SECURITY.md).
 - The server key cannot be rotated yet. Losing it means every station accepts a new key by hand.
 - Feature version 1 does not yet relate the features to the turntable profile, so weights of very different
   chains combine less well; that limits the benefit, not the safety.
-- Trust is a heuristic. Consistency is cheap to fake (a station can send back the published model), so trust only
-  grows by a step a day and only full trust leaves the group of new stations. Against a determined attacker who was
-  invited and behaves well for a long time, the caps and the stations' own checks are the defence, not trust alone.
-- At the very start every station is new, and the cap on new stations has nothing to protect until the operator
-  marks known stations as trusted.
+- Everything the hub combines is the stations' own word, and automatic trust is a heuristic that consistency can
+  fake. The hub therefore builds on the operator's word: the stations he marks as anchors define the reference and
+  decide about publication, everyone else adds at most a fifth within a band around them. Against anchors that
+  turn, the hub holds them to the other anchors and reports it; against a majority of anchors that collude there
+  is no defence but the stations' own checks and the operator.
+- Without an anchor there is no model: the operator has to mark at least one station before anything is combined.
+- `401 unknown_key` tells whoever knows a fingerprint whether that key is registered. That is deliberate: a
+  station needs it to join again after it left or the hub lost its database, and fingerprints are not guessable.

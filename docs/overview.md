@@ -50,14 +50,14 @@ sequenceDiagram
     loop after each retraining, while no recording runs
         St->>Hub: PUT /v1/profiles/{id} (weights, counts, self-check)
     end
-    Note over Hub: combine by weighing, capping by trust and a trimmed mean
+    Note over Hub: combine within a band around the operator's anchors, by a trimmed mean
     Hub->>Hub: new candidate, signed with the server key
 
     St->>Hub: GET /v1/models (If-None-Match)
     Hub-->>St: published model and candidate (JWS)
     Note over St: verify the signature, then estimate own master recordings with local and global model
     St->>Hub: PUT /v1/profiles/{id}/checks/{version} (errors)
-    Note over Hub: published if most stations find it not worse, withdrawn if most find it worse
+    Note over Hub: the anchors decide, after the review window - published if not worse, withdrawn if worse
     Note over St: adopt as prior only if not worse on its own recordings
 ```
 
@@ -65,16 +65,17 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
-    [*] --> candidate: combine, inputs changed
-    candidate --> published: most reporting stations not worse
-    candidate --> withdrawn: most worse, or superseded by a newer candidate
-    published --> withdrawn: most worse, or the operator withdraws
+    [*] --> candidate: combine, result changed
+    candidate --> published: anchors not worse, after the review window
+    candidate --> withdrawn: anchors worse, or superseded after the review window
+    published --> withdrawn: anchors worse, or the operator withdraws
     candidate --> published: the operator publishes
     withdrawn --> [*]
 ```
 
-A published model stays published when a newer one is published; stations take the newest. When the newest is
-withdrawn, the one before is current again.
+A published model stays published when a newer one is published; stations take the one published last. When
+that one is withdrawn, nothing takes its place until the operator publishes a model: stations fall back to their
+own.
 
 ## Where to read on
 

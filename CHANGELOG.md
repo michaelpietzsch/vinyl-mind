@@ -3,8 +3,31 @@
 Versions of the server. The specification has its own versions (feature versions in `spec/`); a server release
 names the feature versions it accepts.
 
-## Unreleased
+## 0.1.8 – unreleased
 
+The findings of the security review of 26 October 2026 (hub protocol and aggregation), schema 4.
+
+- **Anchors.** The reference for everything is the stations the operator trusts (`vinyl-mind trust … 1`):
+  without one there is no model, their coefficients define a band every other contribution is pulled into before
+  it is combined, only they decide about publication, and their trust never changes automatically. Automatic
+  trust stops at `trust_auto_max` (0.9). All other stations share `newcomer_share` in equal parts, whatever they
+  claim; a station's claimed examples are capped across its profiles. A weight no anchor learned stays the prior.
+- **Far** is now two or more learned coefficients outside the band; the penalty falls at most once a day and only
+  for a changed contribution; gains stop below the full level and, from reports, go to contributing stations only.
+- **Candidates and publication.** A candidate is under review for `review_hours` (48): not replaced, not published
+  before; a new combination within 0.02 of it keeps it. The hash that decides whether anything changed is over the
+  result, not over row ids. Contributors and stations of their accounts cannot vote for their own candidate. A
+  withdrawal does not bring an older model back. Every model entry carries a signed status (`state_jws`).
+  Candidates past the review age are decided by the background job.
+- **Protocol.** The nonce is checked before the station's rate limit (a replay costs the station nothing); address
+  limits count IPv6 per /64; `joins_per_day` is counted inside the join; a station that left comes back with its
+  trust and age (30 days); public keys of small order are refused; only plain `application/json` is read (415);
+  a malformed `X-Forwarded-For` is refused (400); the access log keeps the path as sent, with the error code,
+  counts refused requests of unknown senders per address instead of listing them, and is capped; nonces are kept
+  a day beyond their expiry.
+- **Operator.** `vinyl-mind events` (the event log: joins, departures, trust changes, publications, commands),
+  `vinyl-mind status [-prom]` (counts for a textfile collector), `trust <fp> auto`, the publication settings in the
+  startup log. Bindings may name the hub (`aud`), checked against `[accounts] audience`.
 - Documentation: the public hub the author runs, and that vinyl-check 1.1.0 implements the station side.
 
 ## 0.1.7 – 2026-10-25

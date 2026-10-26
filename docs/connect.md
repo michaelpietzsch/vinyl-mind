@@ -178,6 +178,7 @@ base64url(header) . base64url(payload) . base64url(Ed25519 signature over "heade
   | `station` | the station key's fingerprint |
   | `account` | an opaque account id, 22 characters base64url (16 random bytes), fixed per account, unrelated to e-mail or name |
   | `iat`, `exp` | Unix seconds; `exp − iat` at most 7 days. The account service issues 72 hours, never beyond the invitation's expiry |
+  | `aud` | optional: the hub's canonical URL (`https://api.vinylcheck.net`, as `server_url`). A hub with `[accounts] audience` set accepts a binding that names a hub only if it names this one; without an audience it refuses such bindings. A binding without `aud` is accepted as before |
 
 The binding is useless to anyone else: it names one station key. Its lifetime only needs to outlast a join that is
 refused for a while (`join_limit`, up to an hour).
