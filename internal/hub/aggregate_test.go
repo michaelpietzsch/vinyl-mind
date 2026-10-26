@@ -353,9 +353,173 @@ func TestTwoAnchors(t *testing.T) {
 	}
 	in[1].Kind = kind(50, 1_000_000, 1_000_000, 0) // one of the two turns
 	r = Combine(in, cfg, 11)
-	if r.Coef != nil || r.Disagree < farCount || !strings.Contains(r.Reason, "disagree") {
+	if r.Coef != nil || r.Disagree != 11 || !strings.Contains(r.Reason, "disagree") {
 		t.Fatalf("two disagreeing anchors must not make a model: coef %v reason %q disagree %d", r.Coef != nil,
 			r.Reason, r.Disagree)
+	}
+	// With a published model, the disputed coefficients are kept there and the rest is combined
+	published := make([]float64, 11)
+	for j := range published {
+		published[j] = 0.9
+	}
+	r = CombineWith(in, cfg, 11, published)
+	if r.Coef == nil || r.Disagree != 11 || len(r.Kept) != 11 {
+		t.Fatalf("kept at the published model: %+v", r)
+	}
+	for j, c := range r.Coef {
+		if !near(c, 0.9) || r.Basis[j] != 0 {
+			t.Fatalf("coefficient %d not kept: %v basis %v", j, r.Coef, r.Basis)
+		}
+	}
+	// The third review's B3-3: a dispute on one coefficient does not move it to the midpoint either
+	in[1].Kind = kind(1.1, 50, 2000, 0.06)
+	in[1].Kind.Coef[1] = 50
+	r = Combine(in, cfg, 11)
+	if r.Coef != nil || r.Disagree != 1 {
+		t.Fatalf("a single disputed coefficient without a published model: coef %v disagree %d", r.Coef != nil,
+			r.Disagree)
+	}
+	r = CombineWith(in, cfg, 11, published)
+	if r.Coef == nil || !near(r.Coef[1], 0.9) || r.Basis[1] != 0 || r.Coef[2] < 1 || r.Coef[2] > 1.2 ||
+		r.Basis[2] == 0 || len(r.Kept) != 1 || r.Kept[0] != 1 {
+		t.Fatalf("coefficient 1 kept, the rest combined: coef %v basis %v kept %v", r.Coef, r.Basis, r.Kept)
+	}
+	for _, u := range r.Used {
+		if u.Anchor && (u.Far || u.Outside > 0) {
+			t.Fatalf("an anchor is not far on a coefficient without a reference: %+v", u)
+		}
+	}
+}
+
+// The third review's B3-1: a coefficient that only two anchors learned is a second opinion, not a majority. It
+// neither demotes the honest anchor that holds it, nor does the bad anchor define it: it is kept at the prior.
+func TestSecondOpinionOfTwoAnchorsIsNoMajority(t *testing.T) {
+	cfg := config.Default().Aggregation
+	for _, n := range []int{3, 4, 5} {
+		in := anchors(n-1, 1)
+		for i := range in {
+			if i == 0 {
+				continue // anchor 1 has a second opinion: it learned gc and gc_missing
+			}
+			in[i].Kind.Informative = []bool{true, true, true, false, false, true, true, true, true, true}
+			in[i].Kind.Coef[4], in[i].Kind.Coef[5] = 0, 0
+		}
+		in[0].Kind.Coef[4], in[0].Kind.Coef[5] = 2, -1
+		bad := Input{StationID: 99, ProfileID: "p", Trust: 1, Anchor: true, Kind: kind(50, 1_000_000, 1_000_000, 0)}
+		in = append(in, bad)
+		for i := int64(10); i < 14; i++ {
+			in = append(in, Input{StationID: i, ProfileID: "p", Trust: cfg.TrustAutoMax, Kind: kind(1.1, 50, 2000, 0.06)})
+		}
+		r := Combine(in, cfg, 11)
+		if r.Coef == nil || r.Anchors != n-1 {
+			t.Fatalf("%d anchors: %s, %d left", n, r.Reason, r.Anchors)
+		}
+		for _, u := range r.Used {
+			switch {
+			case u.StationID == 99 && !u.Demoted:
+				t.Fatalf("%d anchors: the bad anchor stayed an anchor", n)
+			case u.StationID < 10 && u.StationID != 99 && (u.Demoted || u.Far):
+				t.Fatalf("%d anchors: honest anchor %d demoted %v far %v", n, u.StationID, u.Demoted, u.Far)
+			}
+		}
+		// The bad anchor demoted, the honest one is the only anchor that learned gc: its word stands (and the
+		// newcomers, who learned gc differently, are far from it: one anchor's word is the reference)
+		if r.Coef[4] < 1.5 || r.Coef[4] > 2.1 || r.Coef[1] > 1.3 {
+			t.Fatalf("%d anchors: coefficients %v", n, r.Coef)
+		}
+	}
+	// A bad anchor that is honest everywhere but on the second opinion is not far, and still defines nothing:
+	// the coefficient is kept at the prior of the anchors that did not learn it
+	in := anchors(3, 1)
+	for i := 1; i < 3; i++ {
+		in[i].Kind.Informative = []bool{true, true, true, false, false, true, true, true, true, true}
+		in[i].Kind.Coef[4], in[i].Kind.Coef[5] = 0, 0
+	}
+	in[0].Kind.Coef[4], in[0].Kind.Coef[5] = 2, -1
+	subtle := Input{StationID: 99, ProfileID: "p", Trust: 1, Anchor: true, Kind: kind(1.1, 1_000_000, 1_000_000, 0)}
+	subtle.Kind.Coef[4], subtle.Kind.Coef[5] = 50, -50
+	in = append(in, subtle)
+	for i := int64(10); i < 14; i++ {
+		in = append(in, Input{StationID: i, ProfileID: "p", Trust: cfg.TrustAutoMax, Kind: kind(1.1, 50, 2000, 0.06)})
+	}
+	r := Combine(in, cfg, 11)
+	if r.Coef == nil || r.Anchors != 4 || r.Disagree != 2 || !near(r.Coef[4], 0) || !near(r.Coef[5], 0) ||
+		r.Basis[4] != 0 || len(r.Kept) != 2 {
+		t.Fatalf("a dispute between two on the second opinion: anchors %d disagree %d coef %v basis %v kept %v",
+			r.Anchors, r.Disagree, r.Coef, r.Basis, r.Kept)
+	}
+	for _, u := range r.Used {
+		if u.Demoted || (u.Anchor && u.Far) {
+			t.Fatalf("nobody is far or demoted over a dispute between two: %+v", u)
+		}
+	}
+}
+
+// Two colluding anchors share a second opinion with one honest anchor among seven: a majority among the three that
+// learned it, a minority among the anchors. The honest one keeps its anchor status and its second opinion stands.
+func TestColludersOnASecondOpinionDemoteNobody(t *testing.T) {
+	cfg := config.Default().Aggregation
+	in := anchors(5, 1)
+	for i := 1; i < 5; i++ {
+		in[i].Kind.Informative = []bool{true, true, true, false, false, true, true, true, true, true}
+		in[i].Kind.Coef[4], in[i].Kind.Coef[5] = 0, 0
+	}
+	in[0].Kind.Coef[4], in[0].Kind.Coef[5] = 2, -1
+	for i := int64(98); i < 100; i++ {
+		in = append(in, Input{StationID: i, ProfileID: "p", Trust: 1, Anchor: true, Kind: kind(50, 1_000_000, 1_000_000, 0)})
+	}
+	for i := int64(10); i < 14; i++ {
+		in = append(in, Input{StationID: i, ProfileID: "p", Trust: cfg.TrustAutoMax, Kind: kind(1.1, 50, 2000, 0.06)})
+	}
+	r := Combine(in, cfg, 11)
+	if r.Coef == nil || r.Anchors != 5 {
+		t.Fatalf("five honest anchors remain: %s, %d", r.Reason, r.Anchors)
+	}
+	for _, u := range r.Used {
+		if u.StationID < 10 && (u.Demoted || u.Far) {
+			t.Fatalf("honest anchor %d demoted %v far %v", u.StationID, u.Demoted, u.Far)
+		}
+	}
+	if r.Coef[4] < 1.5 || r.Coef[4] > 2.1 || r.Coef[1] > 1.3 {
+		t.Fatalf("coefficients %v", r.Coef)
+	}
+}
+
+// The third review's B3-2: when the anchors found far are half of all anchors or more, nobody is demoted; two
+// identical colluders among four would otherwise demote the two honest anchors, whose noise is the only spread.
+func TestTieAmongAnchorsDemotesNobody(t *testing.T) {
+	cfg := config.Default().Aggregation
+	in := anchors(2, 1) // 1.05 and 1.10
+	for i := int64(98); i < 100; i++ {
+		in = append(in, Input{StationID: i, ProfileID: "p", Trust: 1, Anchor: true, Kind: kind(2, 1_000_000, 1_000_000, 0)})
+	}
+	for i := int64(10); i < 16; i++ {
+		in = append(in, Input{StationID: i, ProfileID: "p", Trust: cfg.TrustAutoMax, Kind: kind(1.1, 50, 2000, 0.06)})
+	}
+	r := Combine(in, cfg, 11)
+	if r.Coef == nil || r.Anchors != 4 {
+		t.Fatalf("a tie: %s, %d anchors", r.Reason, r.Anchors)
+	}
+	for _, u := range r.Used {
+		if u.Demoted {
+			t.Fatalf("station %d demoted in a tie", u.StationID)
+		}
+	}
+	if r.Coef[1] < 1.2 || r.Coef[1] > 1.8 {
+		t.Fatalf("a tie lands between the two camps: %v", r.Coef)
+	}
+	// Three against two is no tie: the two are demoted
+	in = append(in, anchors(1, 1.15)[0])
+	in[len(in)-1].StationID = 3
+	r = Combine(in, cfg, 11)
+	n := 0
+	for _, u := range r.Used {
+		if u.Demoted {
+			n++
+		}
+	}
+	if r.Anchors != 3 || n != 2 || r.Coef[1] > 1.3 {
+		t.Fatalf("three honest against two colluders: anchors %d demoted %d coef %v", r.Anchors, n, r.Coef)
 	}
 }
 
@@ -406,6 +570,11 @@ func TestOneBadAnchorAmongFew(t *testing.T) {
 func TestNonFiniteCoefficientsAreExcluded(t *testing.T) {
 	cfg := config.Default().Aggregation
 	in := anchors(3, 1)
+	in[2].Kind.CVErrEst = math.NaN() // the third review's B3-7: not reachable through the API, but stored data is data
+	if r := Combine(in, cfg, 11); len(r.Excluded) != 1 || r.Excluded[0].Reason != "not a number" {
+		t.Fatalf("a NaN self-check error is excluded: %+v", r.Excluded)
+	}
+	in = anchors(3, 1)
 	in[0].Kind.Coef[2] = math.NaN()
 	r := Combine(in, cfg, 11)
 	if len(r.Excluded) != 1 || r.Excluded[0].Reason != "not a number" {

@@ -507,6 +507,12 @@ func TestReturnsAreLimited(t *testing.T) {
 // grew automatically, that is, one the operator set.
 func TestMigrationPromotesOnlyOperatorTrust(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "vm.sqlite")
+	if _, err := OpenAsIs("sqlite://" + path); err == nil {
+		t.Fatal("opened as is, a missing database is created rather than refused")
+	}
+	if err := os.WriteFile(path, nil, 0o600); err != nil { // an empty file is an empty SQLite database
+		t.Fatal(err)
+	}
 	s, err := OpenAsIs("sqlite://" + path)
 	if err != nil {
 		t.Fatal(err)

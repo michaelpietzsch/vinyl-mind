@@ -48,6 +48,7 @@ type Server struct {
 	// address and answer (Flush), so that a flood of them costs memory bounded by maxRefused, not disk
 	refusedMu sync.Mutex
 	refused   map[string]*refused
+	writes    sync.WaitGroup // writes of full counters started off the request path; Flush waits for them
 }
 
 type refused struct {
@@ -204,7 +205,12 @@ func (s *Server) countRefused(e store.AccessEntry, key string) {
 	c := s.refused[k]
 	if c == nil {
 		if len(s.refused) >= maxRefused {
-			go s.write(s.takeLocked())
+			entries := s.takeLocked()
+			s.writes.Add(1)
+			go func() {
+				defer s.writes.Done()
+				s.write(entries)
+			}()
 		}
 		e.Address, e.Method, e.Path = key, "*", "*"
 		c = &refused{entry: e}
@@ -220,6 +226,7 @@ func (s *Server) Flush() {
 	entries := s.takeLocked()
 	s.refusedMu.Unlock()
 	s.write(entries)
+	s.writes.Wait()
 }
 
 func (s *Server) takeLocked() []store.AccessEntry {

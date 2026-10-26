@@ -121,6 +121,12 @@ func open(url string, migrate bool) (*Store, error) {
 	switch {
 	case strings.HasPrefix(url, "sqlite://"):
 		path := strings.TrimPrefix(url, "sqlite://")
+		if !migrate {
+			// Opened as is, there is nothing to create: a missing file is a wrong path, not an empty database
+			if _, err := os.Stat(path); err != nil {
+				return nil, fmt.Errorf("no database at %s: %w", path, err)
+			}
+		}
 		esc := strings.NewReplacer("%", "%25", "?", "%3f", "#", "%23").Replace(path)
 		// Foreign keys are off by default in SQLite, and the cascades depend on them
 		s.db, err = sql.Open("sqlite", "file:"+esc+

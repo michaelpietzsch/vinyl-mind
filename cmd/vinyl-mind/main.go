@@ -396,6 +396,12 @@ func run(cfg config.Config, cmd string, args []string) error {
 				if r.Coef == nil {
 					result = r.Reason
 				}
+				if n := demoted(r); n > 0 {
+					result += fmt.Sprintf(", %d anchors held like newcomers", n)
+				}
+				if len(r.Kept) > 0 {
+					result += fmt.Sprintf(", coefficients %v kept: two anchors disagree", r.Kept)
+				}
 				fmt.Fprintf(out, "%d\t%s\t%s\t%s\t%d\t%d\t%s\n", o.Group.FeatureVersion, o.Group.DetectorVersion,
 					o.Group.ChainClass, kind, r.Profiles, r.Stations, result)
 			}
@@ -486,6 +492,17 @@ func run(cfg config.Config, cmd string, args []string) error {
 		return pruneBackups(dir, stamp, *keep)
 	}
 	return nil
+}
+
+// demoted counts the anchors that were no anchor in a combination, being far from the other anchors.
+func demoted(r *hub.Result) int {
+	ids := map[int64]bool{}
+	for _, u := range r.Used {
+		if u.Demoted {
+			ids[u.StationID] = true
+		}
+	}
+	return len(ids)
 }
 
 // warnAboutAnchors says at start what the operator may not notice otherwise: without an anchor nothing is
@@ -803,7 +820,11 @@ func (a *app) serve() error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	go a.background(ctx, srv)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		a.background(ctx, srv)
+	}()
 	errc := make(chan error, 1)
 	go func() { errc <- hs.ListenAndServe() }()
 	a.log.Info("listening", "addr", a.cfg.Listen, "version", version, "database", a.store.Dialect(),
@@ -831,6 +852,13 @@ func (a *app) serve() error {
 	sctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	err := hs.Shutdown(sctx)
+	// A combination or review in progress finishes (every write is one transaction, but a half-done pass would
+	// be repeated for nothing), then the counted refusals go to the access log
+	select {
+	case <-done:
+	case <-sctx.Done():
+		a.log.Warn("background job did not finish in time")
+	}
 	srv.Flush()
 	return err
 }

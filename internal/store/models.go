@@ -175,19 +175,20 @@ func (s *Store) SetModelStatus(version int64, status, reason string, now time.Ti
 
 // Report is a check report of one profile on one model.
 type Report struct {
-	StationID       int64
-	StationFP       string
-	StationStatus   string
-	StationTrust    float64
-	StationOperator bool
-	StationAccount  string
-	StationJoined   time.Time
-	ProfileID       string
-	ModelVersion    int64
-	Adopted         bool
-	Kinds           map[string]spec.KindCheck
-	Verdict         string
-	ReceivedAt      time.Time
+	StationID        int64
+	StationFP        string
+	StationStatus    string
+	StationTrust     float64
+	StationOperator  bool
+	StationAccount   string
+	StationJoined    time.Time
+	StationPenalized *time.Time // the station's last penalty, for an anchor: the last report of it being far
+	ProfileID        string
+	ModelVersion     int64
+	Adopted          bool
+	Kinds            map[string]spec.KindCheck
+	Verdict          string
+	ReceivedAt       time.Time
 }
 
 // Verdicts of a check report.
@@ -223,7 +224,7 @@ func (s *Store) Reports(version, stationID int64) ([]Report, error) {
 		args = append(args, stationID)
 	}
 	rows, err := s.db.Query(s.q(`SELECT r.station_id, st.key_fp, st.status, st.trust, st.trust_operator, st.account,
-		st.joined_at, r.profile_id, r.model_version, r.adopted, r.kinds, r.verdict, r.received_at
+		st.joined_at, st.trust_penalized_at, r.profile_id, r.model_version, r.adopted, r.kinds, r.verdict, r.received_at
 		FROM check_reports r JOIN stations st ON st.id = r.station_id WHERE `+where+` ORDER BY r.received_at`),
 		args...)
 	if err != nil {
@@ -235,12 +236,14 @@ func (s *Store) Reports(version, stationID int64) ([]Report, error) {
 		var r Report
 		var kinds string
 		var received, joined int64
+		var penalized sql.NullInt64
 		var account sql.NullString
 		if err := rows.Scan(&r.StationID, &r.StationFP, &r.StationStatus, &r.StationTrust, &r.StationOperator,
-			&account, &joined, &r.ProfileID, &r.ModelVersion, &r.Adopted, &kinds, &r.Verdict, &received); err != nil {
+			&account, &joined, &penalized, &r.ProfileID, &r.ModelVersion, &r.Adopted, &kinds, &r.Verdict,
+			&received); err != nil {
 			return nil, err
 		}
-		r.StationAccount = account.String
+		r.StationAccount, r.StationPenalized = account.String, fromMS(penalized)
 		if err := json.Unmarshal([]byte(kinds), &r.Kinds); err != nil {
 			return nil, err
 		}

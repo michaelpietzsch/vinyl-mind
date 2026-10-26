@@ -429,6 +429,130 @@ func TestContributorsCannotPublishThemselves(t *testing.T) {
 }
 
 // The review's D4: withdrawing the published model does not bring an older one back; that is the operator's.
+// The third review's B3-6: an anchor that the last combination found far from the other anchors decides nothing
+// for a day: alone it can neither withdraw the model it contributed to nor publish one.
+func TestDoubtedAnchorDecidesNothing(t *testing.T) {
+	f := newFixture(t)
+	for _, s := range []string{"a", "b"} {
+		f.contribute(s, "p1", "1", "usb_turntable.mm", 1)
+	}
+	f.contribute("bad", "p1", "1", "usb_turntable.mm", 50)
+	v := outcome(f.combine(t0), "1", spec.ClassAll).Version
+	if _, err := f.hub.Publish(v, t0); err != nil {
+		t.Fatal(err)
+	}
+	f.combine(reviewed) // found far again: the doubt is renewed
+	f.now = reviewed.Add(time.Hour)
+	f.operator, f.trust = false, 0.9
+	report(f, "r1", "p1", v, 0.1) // two newcomers fill the quorum
+	report(f, "r2", "p1", v, 0.1)
+	f.operator, f.trust = true, 1
+	report(f, "bad", "p1", v, 0.9) // the doubted anchor says worse
+	tally, _ := f.hub.Tally(v, f.now)
+	if status(f, v) != store.Published || tally.AnchorWorse != 0 || tally.Worse != 1 {
+		t.Fatalf("a doubted anchor's word must not withdraw: %s %+v", status(f, v), tally)
+	}
+	// A day later, still far in the last combination: no word; in line again, its word counts
+	f.now = reviewed.Add(25 * time.Hour)
+	report(f, "bad", "p2", v, 0.9)
+	if status(f, v) != store.Published {
+		t.Fatalf("the last combination found the anchor far: %s", status(f, v))
+	}
+	f.contribute("bad", "p1", "1", "usb_turntable.mm", 1)
+	f.combine(f.now)
+	report(f, "bad", "p3", v, 0.9)
+	if status(f, v) != store.Withdrawn {
+		t.Fatalf("in line again, and a day past the report, the anchor decides again: %s", status(f, v))
+	}
+	// Nor can a doubted anchor publish alone
+	f = newFixture(t)
+	for _, s := range []string{"a", "b"} {
+		f.contribute(s, "p1", "1", "usb_turntable.mm", 1)
+	}
+	f.contribute("bad", "p1", "1", "usb_turntable.mm", 50)
+	f.station("checker") // an anchor that only checks
+	v = outcome(f.combine(t0), "1", spec.ClassAll).Version
+	f.combine(reviewed)
+	f.now = reviewed.Add(time.Hour)
+	f.operator, f.trust = false, 0.9
+	report(f, "r1", "p1", v, 0.1)
+	report(f, "r2", "p1", v, 0.1)
+	f.operator, f.trust = true, 1
+	report(f, "bad", "p1", v, 0.1)
+	if status(f, v) != store.Candidate {
+		t.Fatalf("a doubted anchor published alone: %s", status(f, v))
+	}
+	report(f, "checker", "p1", v, 0.1)
+	if status(f, v) != store.Published {
+		t.Fatalf("the anchor that only checks publishes: %s", status(f, v))
+	}
+}
+
+// Two anchors that disagree on a coefficient keep it at the published model; the group reports the dispute, at
+// most once a day however often the state changes.
+func TestDisputedCoefficientsAreKeptAtThePublishedModel(t *testing.T) {
+	f := newFixture(t)
+	f.contribute("a", "p1", "1", "usb_turntable.mm", 1)
+	f.contribute("b", "p1", "1", "usb_turntable.mm", 1.1)
+	f.operator, f.trust = false, 0.9
+	f.contribute("n", "p1", "1", "usb_turntable.mm", 1.05) // the third profile a model needs
+	f.operator, f.trust = true, 1
+	v := outcome(f.combine(t0), "1", spec.ClassAll).Version
+	if ok, err := f.hub.Publish(v, t0); err != nil || !ok {
+		t.Fatalf("publish %d: %v %v", v, ok, err)
+	}
+	var published spec.GlobalModel
+	m, _ := f.st.Model(v)
+	_ = json.Unmarshal([]byte(m.Payload), &published)
+	// b turns on one coefficient, then on all; a flaps hourly
+	f.contribute("b", "p1", "1", "usb_turntable.mm", 1.1)
+	c := &spec.Contribution{Spec: "vinyl-mind/contribution", FeatureVersion: 1, DetectorVersion: "1",
+		Kinds: map[string]spec.KindContribution{"click": kind(1.1, 20, 800, 0.05)}}
+	c.Client.Name, c.Client.Version = "vinyl-check", "1.1.0"
+	c.Chain.Source, c.Chain.Cartridge = "usb_turntable", "mm"
+	c.Kinds["click"].Coef[1] = 50
+	events := func(action string) int {
+		evs, _ := f.st.Events(100)
+		n := 0
+		for _, e := range evs {
+			if e.Action == action {
+				n++
+			}
+		}
+		return n
+	}
+	for h := 1; h <= 6; h++ {
+		at := t0.Add(time.Duration(h) * time.Hour)
+		if h%2 == 1 {
+			if _, err := f.st.PutContribution(f.station("b"), "p1", c, 16, at); err != nil {
+				t.Fatal(err)
+			}
+		} else {
+			f.now = at
+			f.contribute("b", "p1", "1", "usb_turntable.mm", 1.1)
+		}
+		o := outcome(f.combine(at), "1", spec.ClassAll)
+		r := o.Kinds["click"]
+		if h%2 == 1 {
+			if r.Coef == nil || r.Disagree != 1 || !near(r.Coef[1], published.Kinds["click"].Coef[1]) || o.Version != 0 {
+				t.Fatalf("hour %d: the disputed coefficient is kept at the published model: disagree %d coef %v version %d %s",
+					h, r.Disagree, r.Coef, o.Version, o.Skipped)
+			}
+		} else if r.Disagree != 0 {
+			t.Fatalf("hour %d: no dispute: %d", h, r.Disagree)
+		}
+	}
+	raw, _ := f.st.Meta("last_combine")
+	var states []GroupState
+	_ = json.Unmarshal([]byte(raw), &states)
+	// Every anchor contributes, so the quiet state is no_voter; each state is reported once in the day, however
+	// often the group flaps between them, and the summary shows the current one
+	if events("group_anchors_disagree") != 1 || events("group_no_voter") != 1 || states[0].State != "no_voter" {
+		t.Fatalf("one report a day per state for a flapping group, the current state in the summary: disagree %d "+
+			"no_voter %d %+v", events("group_anchors_disagree"), events("group_no_voter"), states[0])
+	}
+}
+
 func TestNoRollbackOnWithdrawal(t *testing.T) {
 	f := newFixture(t)
 	for _, s := range []string{"a", "b", "c"} {
@@ -690,7 +814,7 @@ func TestReportGainsNeedAContributionAndAnchorFarIsRateLimited(t *testing.T) {
 	if status(f, v) != store.Published || !near(f.trustOf("idle"), 0.25) {
 		t.Fatalf("a station without contributions earns nothing by voting: %s %g", status(f, v), f.trustOf("idle"))
 	}
-	// Three anchors, one of them far, combined hourly: one anchor_far event per day
+	// Four anchors, one of them far, combined hourly: demoted in every run, one anchor_demoted event per day
 	f.contribute("bad", "p1", "1", "usb_turntable.mm", 50)
 	for h := 0; h < 5; h++ {
 		f.combine(reviewed.Add(time.Duration(h) * time.Hour))
@@ -698,14 +822,14 @@ func TestReportGainsNeedAContributionAndAnchorFarIsRateLimited(t *testing.T) {
 	events, _ := f.st.Events(100)
 	n := 0
 	for _, e := range events {
-		if e.Action == "anchor_far" {
+		if e.Action == "anchor_demoted" {
 			n++
 			if !strings.Contains(e.Detail, "coefficients") {
-				t.Fatalf("anchor_far without the distance: %q", e.Detail)
+				t.Fatalf("anchor_demoted without the distance: %q", e.Detail)
 			}
 		}
 	}
 	if n != 1 || !near(f.trustOf("bad"), 1) {
-		t.Fatalf("%d anchor_far events in five hourly runs, trust %g", n, f.trustOf("bad"))
+		t.Fatalf("%d anchor_demoted events in five hourly runs, trust %g", n, f.trustOf("bad"))
 	}
 }

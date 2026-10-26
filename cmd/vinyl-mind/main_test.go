@@ -119,6 +119,15 @@ func TestBackupCommand(t *testing.T) {
 	cfg := config.Default()
 	cfg.DataDir = t.TempDir()
 	cfg.DatabaseURL = "sqlite://" + filepath.Join(cfg.DataDir, "vm.sqlite")
+	// Without a database there is nothing to back up, and backup creates none (the third review's A3 note)
+	if err := run(cfg, "backup", []string{filepath.Join(t.TempDir(), "backup")}); err == nil {
+		t.Fatal("backup of a missing database succeeded")
+	}
+	st, err := store.Open(cfg.DatabaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.Close()
 	for _, order := range []string{"flag first", "flag last"} {
 		dir := filepath.Join(t.TempDir(), "backup")
 		args := []string{"-keep", "1", dir}
