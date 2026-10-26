@@ -70,12 +70,19 @@ become an anchor by behaving well for a while. The anchors are the reference for
   station outside the band on two or more of the coefficients it learned is **far** from the reference.
 - **Anchors among themselves.** An anchor is held too: to the median of all anchors while they are few (a median
   of three stands one bad anchor), and to the other anchors alone once at least three of them learned the
-  coefficient. An anchor that is far from the other anchors on the coefficients they share is **no anchor in
-  that combination**: it is held like a newcomer, and a coefficient only it learned stays the prior instead of
-  its word. Only other anchors can bring that about, never newcomers, and it changes no trust: the operator is
-  told (`anchor_far`, once a day) and decides. **Two anchors have no majority**: as long as they agree within
-  the band they are the reference together; if they disagree on two or more coefficients, there is no reference
-  and no model for that kind, and the operator is told (`anchors_disagree`).
+  coefficient. An anchor that is far from the other anchors, on the coefficients that at least half of the other
+  anchors learned (two at the least), is **no anchor in that combination**: it is held like a newcomer, and a
+  coefficient only it learned stays the prior instead of its word. Only other anchors can bring that about, never
+  newcomers; a coefficient that few anchors learned says nothing about it, since among the few a pair of
+  colluders would be the majority; nobody is demoted when the anchors found far are half of all anchors or more
+  (a tie the rest cannot judge); and it changes no trust: the operator is told (`anchor_demoted`, or `anchor_far`
+  for an anchor held but not demoted, once a day) and decides. **Two anchors have no majority.** A coefficient
+  that exactly two anchors learned, be they the only two or two among many with a second opinion (`gc`,
+  `gc_missing`), is their midpoint while they agree, that is, while they are at most √2 bands apart. If they are
+  further apart, the coefficient has **no reference**: it is kept at the published model, or where the anchors
+  that did not learn it left it (the prior), nobody is held on it, and the operator is told (`anchors_disagree`;
+  `vinyl-mind combine -dry-run` names the coefficients). With neither to keep it at, there is no model for that
+  kind. A coefficient only two learned also says nothing about whether one of them is far.
 
 What this means in numbers: with one anchor the model *is* the anchor's model, since the trimmed mean cuts off the
 others' fifth entirely; from two anchors on, the others move a coefficient by at most a third of the distance
@@ -88,8 +95,9 @@ weighs nothing in the combination.
 ### Trust
 
 Trust that the operator gave never changes by itself: an anchor far from the other anchors is reported in the
-log and the event log (`anchor_far`), not demoted, so that no group of stations can push the reference aside.
-Lowering it is the operator's call. Automatic trust:
+log and the event log (`anchor_demoted`, `anchor_far`), and for a day its word decides nothing about publication
+(below), but its trust stays, so that no group of stations can push the reference aside. Lowering it is the
+operator's call. Automatic trust:
 
 - falls by `trust_penalty` (0.15) for a contribution far from the reference, **at most once a day and only for a
   contribution that changed** since the last penalty, down to `trust_min` (0.05);
@@ -151,7 +159,10 @@ station's profile limit (`max_profiles_per_station`). Only stations that joined 
 days ago vote. **What decides is the anchors' word**: the votes of all stations are counted and shown, but a
 report is only a claim, and claims from stations nobody vouches for can neither publish a model nor take one away.
 **A station whose contribution is in the model, or that shares an account with one, cannot vote for it**; its
-good word is not even a report. It can vote against it.
+good word is not even a report. It can vote against it. **An anchor that the last combination found far from the
+other anchors, or that was reported far within the last day** (`anchor_demoted`, `anchor_far`), **decides
+nothing**: its vote is counted like any other station's, and as long as it is far it can neither publish a model
+alone nor take one away.
 
 | Situation | Rule (with `auto = true`) |
 |---|---|
@@ -164,9 +175,10 @@ first three reports do not decide. A candidate that has reached the age is decid
 not only when a report arrives. **This needs an anchor that can vote**: one that did not contribute to the
 candidate and shares no account with one that did. An operator whose every anchor contributes gets candidates
 but no automatic publication, not only at the start but for good; the hub says so at start, in the log and the
-event log when a group's state changes (`group_no_voter`, likewise `group_no_anchor`, `group_anchors_disagree`),
-and in `vinyl-mind status`. The way out is a station of the operator's that only checks: *Contribute* off, *Use
-the global model* on, trusted with `trust … 1`.
+event log when a group's state changes (`group_no_voter`, likewise `group_no_anchor`, `group_anchors_disagree`,
+`group_too_few`, and `group_model` when it forms a model again), at most once a day per group, however often a
+state at a threshold flaps, and always in `vinyl-mind status`. The way out is a station of the operator's that
+only checks: *Contribute* off, *Use the global model* on, trusted with `trust … 1`.
 
 **A withdrawal does not bring an older model back**: the published model is the one published last, as long as it
 is still published; after a withdrawal stations fall back to their local models until the operator publishes
@@ -201,9 +213,9 @@ Over 20 random seeds (median):
 | | |
 |---|---|
 | distance of the combination to the truth, honest stations only | 0.203 |
-| the same with the two attackers (trust 0.9) | 0.205 |
-| the same with twenty attackers | 0.211 |
-| the same with two fresh attackers (trust 0.25) | 0.205 |
+| the same with the two attackers (trust 0.9) | 0.206 |
+| the same with twenty attackers | 0.212 |
+| the same with two fresh attackers (trust 0.25) | 0.206 |
 | the same with a plain weighted mean (no anchors, no band, no caps) | 2.40 |
 | new profile, raw count | 216 % off |
 | new profile, its own model only | 25 % off |
@@ -212,14 +224,14 @@ Over 20 random seeds (median):
 | new profile, own model with the plain mean as prior | 146 % off |
 
 The attackers no longer move the model: held in the band and limited to an equal part of a fifth, two or twenty of
-them, patient or fresh, cost between 0.002 and 0.008. What the model costs is the anchors: it is built around them,
+them, patient or fresh, cost between 0.003 and 0.009. What the model costs is the anchors: it is built around them,
 and two stations' models are two stations' models. With more anchors it gets closer to the truth, and the attackers
 still get nowhere:
 
 | anchors among the eight honest stations | honest only | with two attackers | new profile with the prior |
 |---|---|---|---|
 | 1 | 0.243 | 0.243 | 16 % off, better in 16 of 20 seeds |
-| 2 (the run above) | 0.203 | 0.205 | 12 % off, better in 19 of 20 seeds |
+| 2 (the run above) | 0.203 | 0.206 | 12 % off, better in 19 of 20 seeds |
 | 4 | 0.176 | 0.177 | 11 % off, better in 19 of 20 seeds |
 | 8 | 0.060 | 0.092 | 13 % off, better in 18 of 20 seeds |
 
@@ -228,15 +240,22 @@ nothing a station does on its own can take an anchor's place. Where the prior di
 happened to be good already; the station's check on its own recordings is there to catch exactly that.
 
 An anchor that turns (`-bad-anchors`) is the worst case, since it is the operator's own word that fails. Held to
-the other anchors it changes little, as long as it is not the majority:
+the other anchors, and no anchor in the combination once it is far from them, it changes little, as long as the
+turned ones are fewer than half (medians over twenty seeds, with the two attackers; "honest" is the same seeds
+without the turned anchors and the attackers):
 
-| anchors | of them turned | distance to the truth |
-|---|---|---|
-| 2 | 1 | no model: the two disagree, the operator is told |
-| 3 | 1 | 0.185 (honest 0.203) |
-| 4 | 1 | 0.173 (honest 0.176) |
-| 8 | 1 | 0.086 (honest 0.060) |
-| 8 | 2 | 0.086 |
+| honest anchors | turned anchors | distance to the truth | honest |
+|---|---|---|---|
+| 2 | 1 | 0.207 | 0.203 |
+| 3 | 1 | 0.192 | 0.189 |
+| 4 | 1 | 0.179 | 0.176 |
+| 4 | 2 | 0.181 | 0.176 |
+| 5 | 2 | 0.086 | 0.081 |
+| 8 | 1, 2 or 3 | 0.092 | 0.060 |
+| 8 | 4 | 1.03: half of the anchors is no minority, nothing stands | 0.060 |
+
+A single turned anchor among two honest ones is found far from the other two and demoted; two honest anchors with
+no third are a reference only where they agree, and a coefficient they dispute is kept at the published model.
 
 Two findings from the simulation shape the station side (`docs/station-side.md`):
 

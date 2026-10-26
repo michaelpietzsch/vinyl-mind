@@ -92,7 +92,7 @@ refused (`400 bad_key`).
 | 403 | `binding_invalid` | the binding is not signed by a known key, expired, or names another station or invitation |
 | 403 | `revoked` | this key was revoked; a station must create a new key to join again |
 | 429 | `rate_limited` | too many joins from this address (`Retry-After`) |
-| 429 | `join_limit` | the server admits no more new stations today (`Retry-After`); counted inside the join, so that parallel joins cannot slip past it |
+| 429 | `join_limit` | the server admits no more new stations today, or this key has come back five times today (`Retry-After`); counted inside the join, so that parallel joins cannot slip past it |
 
 A key or account that left within 30 days comes back with the lower of `trust_start` and the trust it had, and
 the key with its age; a key may come back five times a day, then `join_limit`.

@@ -121,7 +121,7 @@ Everything that changes the server is a command; over the network nothing can be
 | `vinyl-mind backup [-keep n] <dir>` | consistent copy of database and server key, while the server runs; `-keep 3` then keeps only the newest three there (for example before every update) |
 | `vinyl-mind version -json` | version, the schema it writes and the schema of the database, without changing anything |
 | `vinyl-mind access-log [-n 50]` | the newest requests with client address and error code: check `trusted_proxies`, look into abuse; refused requests of unknown senders appear as one line per address and answer with their count |
-| `vinyl-mind events [-n 50]` | the event log: joins and departures, trust changes with their reasons, candidates, publications and withdrawals, and the operator's own commands |
+| `vinyl-mind events [-n 50]` | the event log: joins and departures, trust changes with their reasons, anchors far from the other anchors (`anchor_demoted`, `anchor_far`), group states, candidates, publications and withdrawals, and the operator's own commands |
 | `vinyl-mind status [-prom]` | counts of stations by status and trust class, rows per table, models by status, the last combination, joins and refusals of the last day; `-prom` writes the Prometheus text format for a textfile collector |
 
 In a container: `docker compose exec vinyl-mind vinyl-mind <command>`. With `-json`, `invite`, `invitations`,
@@ -151,7 +151,9 @@ version brings the database to its schema at the first start, and the old versio
 itself never migrates. After an update to 0.1.8 or later, look at `vinyl-mind stations`: the stations the operator
 set to full trust before are anchors now; a station whose trust had grown to 1 by itself is not, and the operator
 decides with `trust … 1`. Without an anchor nothing is combined, and without an anchor that does not contribute
-nothing is published automatically (`vinyl-mind status`, the startup log).
+nothing is published automatically (`vinyl-mind status`, the startup log). Candidates built before 0.1.8 carry
+no record of their contributors, so the stations behind them can still vote for them; decide about those by hand
+(`publish`, `withdraw`) or wait for the next candidate.
 
 Replace the image and restart. The database records its schema version; a server older than the database refuses
 to start rather than damaging it. Stations keep working while the server is down: they retry later and keep using

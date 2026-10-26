@@ -38,6 +38,15 @@ The findings of the security review of 26 October 2026 (hub protocol and aggrega
   key may return five times a day. Requests without a verified key are all counted (per address, IPv6 per /64),
   written in one
   transaction off the request path. The signed status carries a `seq` that counts status changes.
+- **After the third review round.** A coefficient that exactly two anchors learned (the only two, or two with a
+  second opinion among many) is theirs only while they agree, within √2 bands; otherwise it is kept at the
+  published model or the prior, nobody is held on it, and the operator is told. A dispute between two says
+  nothing about who is far: an anchor is demoted on coefficients that at least half of the other anchors learned,
+  and never when the far anchors are half of all anchors or more. An anchor found far or demoted
+  (`anchor_demoted`, `anchor_far`) decides nothing about publication for a day. Each state of a group is reported
+  at most once a day.
+  `backup` refuses a missing database instead of creating one; the background job finishes its step before the
+  process ends; a stored self-check error that is not a number excludes the contribution.
 - Documentation: the public hub the author runs, and that vinyl-check 1.1.0 implements the station side.
 
 ## 0.1.7 – 2026-10-25
