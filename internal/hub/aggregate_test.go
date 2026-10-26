@@ -417,3 +417,37 @@ func TestNonFiniteCoefficientsAreExcluded(t *testing.T) {
 		}
 	}
 }
+
+// An anchor that turned and alone learned a coefficient (the others have no second opinion) must not define it:
+// far from the others on the shared coefficients, it is no anchor in this combination.
+func TestTurnedAnchorDefinesNothing(t *testing.T) {
+	cfg := config.Default().Aggregation
+	in := anchors(2, 1)
+	for i := range in {
+		in[i].Kind.Informative = []bool{true, true, true, false, false, true, true, true, true, true}
+		in[i].Kind.Coef[4], in[i].Kind.Coef[5] = 0, 0 // the prior's weights
+	}
+	bad := Input{StationID: 99, ProfileID: "p", Trust: 1, Anchor: true, Kind: kind(50, 1_000_000, 1_000_000, 0)}
+	in = append(in, bad)
+	for i := int64(10); i < 14; i++ {
+		in = append(in, Input{StationID: i, ProfileID: "p", Trust: cfg.TrustAutoMax, Kind: kind(1.1, 50, 2000, 0.06)})
+	}
+	r := Combine(in, cfg, 11)
+	if r.Coef == nil || r.Anchors != 2 {
+		t.Fatalf("two good anchors remain: %+v anchors %d", r.Reason, r.Anchors)
+	}
+	if !near(r.Coef[4], 0) || !near(r.Coef[5], 0) || r.Basis[4] != 0 {
+		t.Fatalf("the turned anchor defined the coefficients only it learned: %v basis %v", r.Coef, r.Basis)
+	}
+	for _, u := range r.Used {
+		switch {
+		case u.StationID == 99 && (u.Anchor || !u.Demoted || !u.Far):
+			t.Fatalf("the turned anchor: anchor %v demoted %v far %v", u.Anchor, u.Demoted, u.Far)
+		case u.StationID != 99 && (u.Far || u.Demoted):
+			t.Fatalf("station %d: far %v demoted %v", u.StationID, u.Far, u.Demoted)
+		}
+	}
+	if r.Coef[1] > 1.3 {
+		t.Fatalf("the model followed the turned anchor: %v", r.Coef)
+	}
+}

@@ -35,6 +35,7 @@ type Used struct {
 	Outside  int       // learned coefficients outside the band
 	Clipped  int       // coefficients pulled into the band
 	MaxDist  float64   // the largest distance to the reference, in bands
+	Demoted  bool      // an anchor far from the other anchors: held like a newcomer in this combination
 }
 
 // farCount is how many learned coefficients outside the band make a contribution far from the reference: one
@@ -123,6 +124,15 @@ func Combine(in []Input, cfg config.Aggregation, nCoef int) *Result {
 	// no majority: if they disagree, there is no reference and no model.
 	var known []bool
 	res.Reference, res.Band, known = reference(res.Used, 0, cfg, nCoef)
+	// An anchor far from the other anchors, on the coefficients they share, is no reference in this combination:
+	// it is held like a newcomer, and a coefficient only it learned stays the prior rather than its word. Only
+	// other anchors can bring this about, never newcomers, and it changes no trust: the operator is told.
+	if res.Anchors >= 3 {
+		if demote(res.Used, cfg, nCoef) {
+			res.Anchors = countAnchors(res.Used)
+			res.Reference, res.Band, known = reference(res.Used, 0, cfg, nCoef)
+		}
+	}
 	if res.Anchors == 2 {
 		if res.Disagree = disagreement(res.Used, res.Band, known); res.Disagree >= farCount {
 			res.Reason = fmt.Sprintf("the two anchors disagree on %d coefficients", res.Disagree)
@@ -275,6 +285,32 @@ func stationMeans(used []Used, j int, keep func(Used) bool) []float64 {
 		out = append(out, sums[id]/float64(counts[id]))
 	}
 	return out
+}
+
+// demote finds the anchors that are far from the other anchors and takes their anchor status away for this
+// combination, unless that would leave none. It reports whether anything changed.
+func demote(used []Used, cfg config.Aggregation, nCoef int) bool {
+	far := map[int64]bool{}
+	for _, u := range used {
+		if !u.Anchor || far[u.StationID] {
+			continue
+		}
+		ref, band, known := reference(used, u.StationID, cfg, nCoef)
+		probe := Used{Input: u.Input, Coef: append([]float64(nil), u.Kind.Coef...)}
+		hold(&probe, ref, band, known)
+		if probe.Far {
+			far[u.StationID] = true
+		}
+	}
+	if len(far) == 0 || len(far) >= countAnchors(used) {
+		return false
+	}
+	for i := range used {
+		if used[i].Anchor && far[used[i].StationID] {
+			used[i].Anchor, used[i].Demoted = false, true
+		}
+	}
+	return true
 }
 
 // disagreement counts the coefficients on which the two anchors differ by more than the band: with two there is
