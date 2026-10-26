@@ -69,15 +69,19 @@ become an anchor by behaving well for a while. The anchors are the reference for
   station claims beyond the band is never averaged in: the influence of one contribution is bounded by the band,
   not by the ±50 of the specification. A station outside the band on two or more of the coefficients it learned
   is **far** from the reference.
-- **A majority of all anchors, or no reference.** Per coefficient, the anchors that learned it take the median
-  of their positions, and those within the floor band of it (two: within √2 bands of each other) stand behind
-  it. Only when they are **more than half of all anchors** is that the reference. A minority defines nothing:
-  not two anchors with a second opinion (`gc`, `gc_missing`) among many, not colluders who are the majority among
-  the few that learned a coefficient, not one of two equal camps. Such a coefficient has **no reference**: it is
-  kept at the published model, or where the anchors that did not learn it left it (the prior), nobody is held on
-  it and nobody is far on it, and the operator is told (`anchors_disagree`; `vinyl-mind combine -dry-run` names
-  the coefficients). With neither to keep it at, there is no model for that kind. The price is that a second
-  opinion is learned only once most anchors have one; that is the honest state of the threat model.
+- **A majority of all anchors, or no reference.** Per coefficient, the anchors that learned it are grouped: the
+  largest group of them within the floor band of one position (two: within √2 bands of each other) stands
+  behind it. Only when they are **more than half of all anchors** is that the reference. The majority is always one of
+  all anchors, also when an anchor is held to the others: it is left out of the centre it is held to, never of
+  the question who the majority is, since a minority just beyond the band would otherwise pass for the majority
+  in every honest anchor's view. A minority defines nothing: not two anchors with a second opinion (`gc`,
+  `gc_missing`) among many, not colluders who are the majority among the few that learned a coefficient, not one
+  of two equal camps. Such a coefficient has **no reference**: it is kept at the published model, or where the
+  anchors that did not learn it left it (the prior), nobody is held on it and nobody is far on it, and the
+  operator is told (`anchors_disagree`; `vinyl-mind combine -dry-run` names the coefficients). With neither to
+  keep it at, there is no model for that kind. An anchor that stands behind the majority position is held to
+  nothing on that coefficient and is never far on it: it agrees. The price of the rule is that a second opinion
+  is learned only once most anchors have one; that is the honest state of the threat model.
 - **Anchors among themselves.** An anchor is held too: to the median of all anchors while they are few (a median
   of three stands one bad anchor), and to the other anchors alone once at least three of them learned the
   coefficient. An anchor that is far from the other anchors **on the coefficients every anchor learned** is **no
@@ -166,7 +170,8 @@ report is only a claim, and claims from stations nobody vouches for can neither 
 good word is not even a report. It can vote against it. **An anchor that the last combination that used it found
 far from the other anchors** (`anchor_demoted`, `anchor_far`) **decides nothing**: its vote is counted like any
 other station's, and until a combination finds it in line again it can neither publish a model alone nor take one
-away. The doubt is recorded with the station, so it outlives a restart.
+away. The doubt is recorded with the station (`vinyl-mind stations`, *far since*; `status`), so it outlives a
+restart, and `vinyl-mind trust <fingerprint> …` lifts it: the operator has looked.
 
 | Situation | Rule (with `auto = true`) |
 |---|---|
@@ -275,6 +280,16 @@ no third are a reference only where they agree, and a coefficient they dispute i
 Turned anchors that learned a second opinion define it neither when honest anchors with one are few (they are no
 majority of all anchors, the weight stays the prior) nor when they are many (the honest majority stands behind
 its position, the turned ones are outside it).
+
+The scenario tests in `internal/hub` (`TestAnchorMatrix`, `TestTunedOffsetColluders`, `TestMajorityAvailability`)
+and the sweeps in `internal/sim` hold the rules to these bounds, over every count of anchors and turned anchors
+the review looked at, and run in the CI: a minority of the anchors that is far from the rest, at any offset
+beyond the band, is demoted in every case and moves no coefficient by more than 0.05 (0.15 with the median, whose
+steps between the stations' values are that wide); a minority inside the band is an agreeing minority and moves a
+coefficient by less than the band plus noise (0.9), as does half of the anchors inside the band, which nothing
+can tell from honest spread; half of the anchors far from the rest form no model; honest anchors are never found
+far or demoted at the heterogeneity the simulation assumes (0.15), and at twice that in a few per cent of the
+combinations.
 
 Two findings from the simulation shape the station side (`docs/station-side.md`):
 

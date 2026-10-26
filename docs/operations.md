@@ -108,10 +108,10 @@ Everything that changes the server is a command; over the network nothing can be
 | `vinyl-mind fingerprint` | the server key's fingerprint, to publish |
 | `vinyl-mind invite -uses 1 -days 14` | a new invitation code, shown once and kept only as a hash |
 | `vinyl-mind invitations`, `revoke-invitation <id>` | list and revoke codes |
-| `vinyl-mind stations` | stations with status, trust, profiles and last contact |
+| `vinyl-mind stations` | stations with status, trust, profiles, last contact, and since when the last combination that used the station found it far (*far since*): an anchor in that state decides nothing until a combination finds it in line again |
 | `vinyl-mind approve <fingerprint>` | admit a waiting station (`join_mode = "approval"`) |
 | `vinyl-mind revoke <fingerprint>` | revoke a key and delete what the station sent |
-| `vinyl-mind trust <fingerprint> <0..1\|auto>` | set a station's trust as the operator: 1 makes it an **anchor**, the reference every other station is held to and the word that publishes models; `auto` hands it back to the automatic trust. Mark at least one station you know before anything is combined: without an anchor there is no model ([aggregation.md](aggregation.md)) |
+| `vinyl-mind trust <fingerprint> <0..1\|auto>` | set a station's trust as the operator: 1 makes it an **anchor**, the reference every other station is held to and the word that publishes models; `auto` hands it back to the automatic trust. Either lifts the doubt about a station found far (*far since*): the operator has looked. Mark at least one station you know before anything is combined: without an anchor there is no model ([aggregation.md](aggregation.md)) |
 | `vinyl-mind revoke-invitation-stations <id>` | revoke a code and every station that joined with it, for example when one station is disconnected |
 | `vinyl-mind revoke-account <account>` | revoke every station of an account, when the account service closes or blocks it |
 | `vinyl-mind invite -bound` | a code that is valid only with an account service's binding (`docs/connect.md`), for the pool of an account service |
@@ -122,7 +122,7 @@ Everything that changes the server is a command; over the network nothing can be
 | `vinyl-mind version -json` | version, the schema it writes and the schema of the database, without changing anything |
 | `vinyl-mind access-log [-n 50]` | the newest requests with client address and error code: check `trusted_proxies`, look into abuse; refused requests of unknown senders appear as one line per address and answer with their count |
 | `vinyl-mind events [-n 50]` | the event log: joins and departures, trust changes with their reasons, anchors far from the other anchors (`anchor_demoted`, `anchor_far`), group states, candidates, publications and withdrawals, and the operator's own commands |
-| `vinyl-mind status [-prom]` | counts of stations by status and trust class, rows per table, models by status, the last combination, joins and refusals of the last day; `-prom` writes the Prometheus text format for a textfile collector |
+| `vinyl-mind status [-prom]` | counts of stations by status and trust class, rows per table, models by status, the last combination and the state of every group, anchors and stations in doubt, joins and refusals of the last day; `-prom` writes the Prometheus text format for a textfile collector |
 
 In a container: `docker compose exec vinyl-mind vinyl-mind <command>`. With `-json`, `invite`, `invitations`,
 `stations` and `revoke-invitation-stations` write one JSON object per line to stdout and nothing else, for scripts

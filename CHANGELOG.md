@@ -49,6 +49,14 @@ The findings of the security review of 26 October 2026 (hub protocol and aggrega
   model once a day as long as it lasts. `backup` refuses a missing database instead of creating one; the
   background job finishes its step before the process ends; a stored self-check error that is not a number
   excludes the contribution.
+- **After the fifth review round.** The majority behind a coefficient is always one of all anchors, also in the
+  view of an anchor that is held to the others (a minority just beyond the band could otherwise pass for the
+  majority in every honest anchor's view); the position is the largest group of anchors within the band, not the
+  surroundings of their median, which a minority just short of half skews; and an anchor behind the majority
+  position is never far on it. `vinyl-mind trust` lifts the doubt about a station; `stations` shows
+  since when a station is in doubt, `status` counts them. The scenario tests of the review are in the repository,
+  with bounds, and the CI runs them: the anchor matrix, colluders at tuned offsets, the availability under honest
+  heterogeneity, and the simulation sweeps with and without a second opinion.
 - Documentation: the public hub the author runs, and that vinyl-check 1.1.0 implements the station side.
 
 ## 0.1.7 – 2026-10-25
