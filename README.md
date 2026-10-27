@@ -8,7 +8,7 @@ pool what they learn without pooling their data: each station sends the small mo
 Vinyl-Mind combines them robustly into a global model, signs it and gives it back. A station uses it as the
 starting point of its own training, and only if it does well on the station's own recordings.
 
-> **Status: 0.1.7, in operation.** The author runs a public hub for vinyl-check 1.1 and later (below). Feature
+> **Status: 0.1.8, in operation.** The author runs a public hub for vinyl-check 1.1 and later (below). Feature
 > version 1 is a first step: the station's features are not yet relative to the turntable profile (that is
 > version 2).
 

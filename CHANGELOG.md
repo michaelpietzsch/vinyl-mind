@@ -3,7 +3,7 @@
 Versions of the server. The specification has its own versions (feature versions in `spec/`); a server release
 names the feature versions it accepts.
 
-## 0.1.8 – unreleased
+## 0.1.8 – 2026-10-27
 
 The findings of the security review of 26 October 2026 (hub protocol and aggregation), schema 4.
 
