@@ -16,7 +16,7 @@ func TestRevokeInvitationStations(t *testing.T) {
 	cfg := config.Default()
 	cfg.DataDir = t.TempDir()
 	cfg.DatabaseURL = "sqlite://" + filepath.Join(cfg.DataDir, "vm.sqlite")
-	a, err := open(cfg)
+	a, err := open(cfg, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -27,7 +27,7 @@ func TestRevokeInvitationStations(t *testing.T) {
 	for _, j := range []struct{ fp, code string }{{"fp-a", "code-of-an-account"}, {"fp-b", "code-of-an-account"},
 		{"fp-c", "another-code"}} {
 		code := j.code
-		if _, err := a.store.Join(j.fp, "pk", &code, false, 0.25, nil, now); err != nil {
+		if _, err := a.store.Join(j.fp, "pk", &code, false, 0.25, nil, 0, now); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -46,7 +46,7 @@ func TestRevokeInvitationStations(t *testing.T) {
 		}
 	}
 	code := "code-of-an-account"
-	if _, err := a.store.Join("fp-d", "pk", &code, false, 0.25, nil, now); err == nil {
+	if _, err := a.store.Join("fp-d", "pk", &code, false, 0.25, nil, 0, now); err == nil {
 		t.Error("the revoked code must not admit another station")
 	}
 	if err := a.revokeInvitationStations(999, true, now); err == nil {
@@ -71,7 +71,7 @@ func TestBackupKeep(t *testing.T) {
 	cfg := config.Default()
 	cfg.DataDir = t.TempDir()
 	cfg.DatabaseURL = "sqlite://" + filepath.Join(cfg.DataDir, "vm.sqlite")
-	a, err := open(cfg)
+	a, err := open(cfg, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,6 +119,15 @@ func TestBackupCommand(t *testing.T) {
 	cfg := config.Default()
 	cfg.DataDir = t.TempDir()
 	cfg.DatabaseURL = "sqlite://" + filepath.Join(cfg.DataDir, "vm.sqlite")
+	// Without a database there is nothing to back up, and backup creates none (the third review's A3 note)
+	if err := run(cfg, "backup", []string{filepath.Join(t.TempDir(), "backup")}); err == nil {
+		t.Fatal("backup of a missing database succeeded")
+	}
+	st, err := store.Open(cfg.DatabaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.Close()
 	for _, order := range []string{"flag first", "flag last"} {
 		dir := filepath.Join(t.TempDir(), "backup")
 		args := []string{"-keep", "1", dir}

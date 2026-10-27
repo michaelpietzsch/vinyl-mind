@@ -7,6 +7,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"math"
 	"os"
 
 	"github.com/michaelpietzsch/vinyl-mind/internal/sim"
@@ -18,7 +19,10 @@ func main() {
 	flag.IntVar(&p.Stations, "stations", p.Stations, "honest stations (one profile each)")
 	flag.IntVar(&p.Recordings, "recordings", p.Recordings, "recordings with a master per honest profile")
 	flag.IntVar(&p.Events, "events", p.Events, "detections per recording")
-	flag.IntVar(&p.Attackers, "attackers", p.Attackers, "new stations sending a reversed model with inflated claims")
+	flag.IntVar(&p.Anchors, "anchors", p.Anchors, "honest stations the operator trusts")
+	flag.IntVar(&p.BadAnchors, "bad-anchors", p.BadAnchors, "anchors that turned and send the attackers' model")
+	flag.IntVar(&p.Attackers, "attackers", p.Attackers, "stations sending a reversed model with inflated claims")
+	flag.Float64Var(&p.AttackerTrust, "attacker-trust", p.AttackerTrust, "the attackers' trust (0.9: the automatic maximum)")
 	flag.Float64Var(&p.NoGC, "no-gc", p.NoGC, "share of the honest stations without a second opinion")
 	flag.Float64Var(&p.Heterogeneity, "heterogeneity", p.Heterogeneity, "spread of the profiles' true coefficients")
 	flag.Float64Var(&p.ChainShift, "chain-shift", p.ChainShift, "spread of the chains' feature offsets")
@@ -33,13 +37,18 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	fmt.Printf("%d honest stations, %d attackers, %d recordings x %d detections per honest profile\n\n",
-		p.Stations, p.Attackers, p.Recordings, p.Events)
+	fmt.Printf("%d honest stations (%d trusted by the operator), %d attackers at trust %.2f, %d recordings x %d detections per honest profile\n\n",
+		p.Stations, p.Anchors, p.Attackers, p.AttackerTrust, p.Recordings, p.Events)
 	fmt.Println("Distance of the combined coefficients to the truth (mean absolute difference)")
 	fmt.Printf("  honest stations only                 %6.3f\n", r.DistHonest)
 	fmt.Printf("  with attackers, Vinyl-Mind           %6.3f\n", r.DistAttacked)
 	fmt.Printf("  with attackers, plain weighted mean  %6.3f\n", r.DistNaive)
-	fmt.Printf("  honest, constant features averaged   %6.3f\n\n", r.DistUnmasked)
+	if math.IsNaN(r.DistUnmasked) {
+		fmt.Printf("  honest, constant features averaged   no model: the stations that sent the prior are a camp " +
+			"of their own\n\n")
+	} else {
+		fmt.Printf("  honest, constant features averaged   %6.3f\n\n", r.DistUnmasked)
+	}
 	fmt.Printf("New profile with %d x %d judged detections: estimate error per recording on %d held-out ones\n",
 		p.NewRecordings, p.NewEvents, p.TestRecordings)
 	fmt.Printf("  raw count                            %5.1f %%\n", 100*r.ErrRaw)

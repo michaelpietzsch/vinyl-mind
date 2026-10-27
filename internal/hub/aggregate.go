@@ -15,17 +15,32 @@ import (
 type Input struct {
 	StationID int64
 	ProfileID string
+	Account   string
 	Trust     float64
-	Kind      spec.KindContribution
+	// Anchor marks a station the operator trusts at the full level. The anchors are the reference: without one
+	// there is no combination, their coefficients define the band everything else is held in, and only their
+	// check reports publish a model. Automatic trust never makes an anchor.
+	Anchor bool
+	Kind   spec.KindContribution
 }
 
 // Used is an input that went into the combination, with its weight.
 type Used struct {
 	Input
-	Evidence float64 // weighted examples: manual judgements count ManualWeight times
-	Quality  float64 // 1 at a perfect self-check, 0 at the limit MaxEstError
-	Share    float64 // final share in the combination; the shares add up to 1
+	Coef     []float64 // the coefficients as combined: the station's own, pulled into the band around the reference
+	Evidence float64   // weighted examples: manual judgements count ManualWeight times
+	Quality  float64   // 1 at a perfect self-check, 0 at the limit MaxEstError
+	Share    float64   // final share in the combination; the shares add up to 1
+	Far      bool      // outside the band on at least farCount of the coefficients the profile learned
+	Outside  int       // learned coefficients outside the band
+	Clipped  int       // coefficients pulled into the band
+	MaxDist  float64   // the largest distance to the reference, in bands
+	Demoted  bool      // an anchor far from the other anchors: held like a newcomer in this combination
 }
+
+// farCount is how many learned coefficients outside the band make a contribution far from the reference: one
+// outlier is pulled into the band and forgiven, two are a pattern.
+const farCount = 2
 
 // Excluded is an input that was left out, and why.
 type Excluded struct {
@@ -34,27 +49,49 @@ type Excluded struct {
 	Reason    string
 }
 
-// Result is the combination of one kind. Coef is nil if there were not enough usable inputs.
+// Result is the combination of one kind. Coef is nil if there were not enough usable inputs or no anchor.
 type Result struct {
-	Coef     []float64
-	Spread   []float64
-	Basis    []int // per coefficient, the stations it was combined from; 0: too few were informative (see Combine)
-	Profiles int
-	Stations int
-	Examples float64
-	Used     []Used
-	Excluded []Excluded
-	Reason   string // why there is no combination
+	Coef      []float64
+	Spread    []float64
+	Reference []float64 // the anchors' coefficients, median per coefficient
+	Band      []float64 // half-width of the band around the reference, per coefficient
+	Basis     []int     // per coefficient, the stations it was combined from; 0: kept at the reference (see Combine)
+	Profiles  int
+	Stations  int
+	Anchors   int
+	Examples  float64
+	Used      []Used
+	Excluded  []Excluded
+	Reason    string // why there is no combination
+	Disagree  int    // coefficients on which no majority of the anchors agrees: two learners apart, or a split
+	Kept      []int  // those coefficients, kept at the published model or the prior instead of a reference
 }
 
-// Combine weighs the inputs of one kind and combines them coefficient by coefficient.
+// Combine weighs the inputs of one kind and combines them coefficient by coefficient, with no published model to
+// keep a disputed coefficient at (see CombineWith).
 func Combine(in []Input, cfg config.Aggregation, nCoef int) *Result {
+	return CombineWith(in, cfg, nCoef, nil)
+}
+
+// CombineWith is the combination of one kind, given the coefficients of the model published last (nil without one).
+//
+// Every claim in a contribution is the station's own word, so nothing in it may buy influence beyond what the
+// operator's anchors allow: a contribution is held within a band around the anchors' coefficients, the stations
+// the operator does not vouch for share one fifth in equal parts, and a weight that no anchor learned stays
+// where the anchors left it. A coefficient has a reference only where a majority of all anchors stands behind
+// one position (see reference): otherwise it is kept at the published model, or at the prior the anchors that
+// did not learn it sent for it; with neither to keep it at, there is no model.
+func CombineWith(in []Input, cfg config.Aggregation, nCoef int, published []float64) *Result {
 	res := &Result{}
 	for _, x := range in {
 		k := x.Kind
 		switch {
 		case len(k.Coef) != nCoef || (k.Informative != nil && len(k.Informative) != nCoef-1):
 			res.Excluded = append(res.Excluded, Excluded{x.StationID, x.ProfileID, "wrong number of coefficients"})
+			continue
+		case !finite(k.Coef) || !finite([]float64{k.CVErrEst, k.CVErrRaw}):
+			// The specification refuses these at the door; a stored one must not break the combination
+			res.Excluded = append(res.Excluded, Excluded{x.StationID, x.ProfileID, "not a number"})
 			continue
 		case k.CVErrEst > cfg.MaxEstError:
 			res.Excluded = append(res.Excluded, Excluded{x.StationID, x.ProfileID,
@@ -66,22 +103,68 @@ func Combine(in []Input, cfg config.Aggregation, nCoef int) *Result {
 			continue
 		}
 		// Claimed examples are not proof: beyond MaxEvidence, more claims buy no more weight
-		u := Used{Input: x, Evidence: math.Min(cfg.MaxEvidence, cfg.ManualWeight*float64(k.NManual)+float64(k.NMaster)),
-			Quality: 1 - k.CVErrEst/cfg.MaxEstError}
+		u := Used{Input: x, Coef: append([]float64(nil), k.Coef...),
+			Evidence: math.Min(cfg.MaxEvidence, cfg.ManualWeight*float64(k.NManual)+float64(k.NMaster)),
+			Quality:  1 - k.CVErrEst/cfg.MaxEstError}
 		if u.Evidence*u.Quality <= 0 {
 			res.Excluded = append(res.Excluded, Excluded{x.StationID, x.ProfileID, "no weight"})
 			continue
 		}
 		res.Used = append(res.Used, u)
 	}
+	capStationEvidence(res.Used, 2*cfg.MaxEvidence)
 	for _, u := range res.Used {
 		res.Examples += u.Evidence
 	}
-	res.Profiles, res.Stations = len(res.Used), countStations(res.Used)
+	res.Profiles, res.Stations, res.Anchors = len(res.Used), countStations(res.Used), countAnchors(res.Used)
 	if !enough(res.Used, cfg) {
 		res.Reason = fmt.Sprintf("%d usable profiles from %d stations, need %d from %d", res.Profiles,
 			res.Stations, cfg.MinProfiles, cfg.MinStations)
 		return res
+	}
+	if res.Anchors == 0 {
+		res.Reason = "no station trusted by the operator among the inputs"
+		return res
+	}
+
+	// The reference is the anchors' position; every other station is held within the band around it. An anchor
+	// is held to the other anchors: to the median of all of them while they are few (a median of three stands one
+	// bad anchor), and to the others alone once at least three of them learned the coefficient. An anchor far
+	// from the other anchors, on the coefficients every anchor learned, is no reference in this combination: it
+	// is held like a newcomer, and a coefficient only it learned stays the prior rather than its word. Only other
+	// anchors can bring this about, never newcomers, and it changes no trust: the operator is told.
+	if res.Anchors >= 3 && demote(res.Used, cfg, nCoef) {
+		res.Anchors = countAnchors(res.Used)
+	}
+	pos := reference(res.Used, 0, cfg, nCoef)
+	res.Disagree = countDisputed(pos.disagree)
+	for j, disputed := range pos.disagree {
+		if !disputed {
+			continue
+		}
+		switch {
+		case len(published) == nCoef:
+			pos.ref[j] = published[j]
+		case !math.IsNaN(pos.ref[j]):
+			// the prior, from the anchors that did not learn the coefficient
+		default:
+			res.Reason = fmt.Sprintf("the anchors have no majority on %d coefficients and nothing is published to "+
+				"keep them at", res.Disagree)
+			return res
+		}
+		res.Kept = append(res.Kept, j)
+	}
+	res.Reference, res.Band = pos.ref, pos.band
+	for i := range res.Used {
+		u := &res.Used[i]
+		p := pos
+		if u.Anchor {
+			if res.Anchors < 2 {
+				continue
+			}
+			p = reference(res.Used, u.StationID, cfg, nCoef)
+		}
+		hold(u, p.ref, p.band, p.known)
 	}
 	shares := weigh(res.Used, cfg)
 	for i := range res.Used {
@@ -90,10 +173,14 @@ func Combine(in []Input, cfg config.Aggregation, nCoef int) *Result {
 
 	// A weight is combined only from the profiles that learned it: where a feature never varied, the profile
 	// sent the prior's weight, and averaging that in would only drag the combination back. The shares are worked
-	// out again among those profiles, so that the caps hold there as well. If they are too few, the weight is
-	// combined from all, which for the others is the prior again: it moves little until enough stations see it.
+	// out again among those profiles. Unless an anchor is among them, and enough others, the weight stays what
+	// the anchors sent, which is the prior they trained towards: a group of newcomers cannot define it alone.
 	res.Coef, res.Spread, res.Basis = make([]float64, nCoef), make([]float64, nCoef), make([]int, nCoef)
 	for j := 0; j < nCoef; j++ {
+		if pos.disagree[j] {
+			res.Coef[j] = res.Reference[j]
+			continue
+		}
 		used, ws := res.Used, shares
 		var sub []Used
 		for _, u := range res.Used {
@@ -104,12 +191,15 @@ func Combine(in []Input, cfg config.Aggregation, nCoef int) *Result {
 		switch {
 		case len(sub) == len(res.Used):
 			res.Basis[j] = res.Stations
-		case enough(sub, cfg):
+		case countAnchors(sub) > 0 && enough(sub, cfg):
 			used, ws, res.Basis[j] = sub, weigh(sub, cfg), countStations(sub)
+		default:
+			res.Coef[j] = res.Reference[j]
+			continue
 		}
 		vals := make([]float64, len(used))
 		for i, u := range used {
-			vals[i] = u.Kind.Coef[j]
+			vals[i] = u.Coef[j]
 		}
 		if cfg.Method == "median" {
 			res.Coef[j] = quantile(vals, ws, 0.5)
@@ -121,6 +211,16 @@ func Combine(in []Input, cfg config.Aggregation, nCoef int) *Result {
 	return res
 }
 
+func countDisputed(disagree []bool) int {
+	n := 0
+	for _, d := range disagree {
+		if d {
+			n++
+		}
+	}
+	return n
+}
+
 func countStations(used []Used) int {
 	ids := map[int64]bool{}
 	for _, u := range used {
@@ -129,44 +229,315 @@ func countStations(used []Used) int {
 	return len(ids)
 }
 
+func countAnchors(used []Used) int {
+	ids := map[int64]bool{}
+	for _, u := range used {
+		if u.Anchor {
+			ids[u.StationID] = true
+		}
+	}
+	return len(ids)
+}
+
 func enough(used []Used, cfg config.Aggregation) bool {
 	return len(used) >= cfg.MinProfiles && countStations(used) >= cfg.MinStations
 }
 
-// weigh gives each input its share in the combination: the stations' weights capped by their trust and the
-// newcomers' limit, each station's share split among its profiles by their weight. The shares add up to 1.
-func weigh(used []Used, cfg config.Aggregation) []float64 {
-	stations := map[int64]float64{} // station → sum of its profiles' weights
-	trust := map[int64]float64{}
+// capStationEvidence bounds what one station claims across all its profiles: beyond max, more profiles buy no
+// more weight, each profile keeps its share of the station's claim.
+func capStationEvidence(used []Used, max float64) {
+	sum := map[int64]float64{}
 	for _, u := range used {
-		stations[u.StationID] += u.Evidence * u.Quality
-		trust[u.StationID] = u.Trust
+		sum[u.StationID] += u.Evidence
 	}
-	ids := make([]int64, 0, len(stations))
-	for id := range stations {
-		ids = append(ids, id)
+	for i := range used {
+		if s := sum[used[i].StationID]; s > max {
+			used[i].Evidence *= max / s
+		}
+	}
+}
+
+// pairSpread widens the band for the question whether two anchors agree: the band is the spread of one position,
+// and the difference of two independent honest positions spreads root two times as wide. In the simulation
+// (heterogeneity 0.15) two honest anchors never disagree at this width over twenty seeds, and did in two at the
+// band itself; an anchor that turns can still move a coefficient by at most half of it.
+const pairSpread = math.Sqrt2
+
+// position is the anchors' position: per coefficient the reference and the band around it, whether a majority of
+// the anchors stands behind it (known: everyone is held to the reference), and whether anchors learned the
+// coefficient without such a majority (disagree: there is no reference; ref holds the prior from the anchors that
+// did not learn it, NaN when every anchor did).
+type position struct {
+	ref, band []float64
+	known     []bool
+	disagree  []bool
+}
+
+// reference is the anchors' position. Per coefficient, the anchors that learned it are grouped: the largest
+// group of them within the floor band of one of their values, or of their median (two: within pairSpread bands
+// of each other), stands behind one position. Only when they are more than half of all anchors is it the
+// reference, the median of those behind it, with a band of ConsistencyK robust spreads around it: with fewer
+// than three of them there is no spread to measure and the floor stands in, with more it is their median
+// absolute deviation. The largest group rather than the surroundings of the median, because a minority just
+// short of half skews the median to the edge of the honest anchors, where the band no longer covers them all,
+// and because the median between two camps lies within the band of both when they are close, which made one
+// honest anchor's noise the other camp's majority. A minority of anchors, be they two with a second opinion
+// among many, colluders among the few that learned a coefficient, or one of two equal camps, defines nothing:
+// the coefficient has no reference (disagree). The majority is always one of all anchors: the station exclude
+// (0: none) is left out only of the centre it is held to and of the spread, where others stand behind the
+// position. Judging the majority among the others instead let a minority at a tuned offset, just beyond the
+// floor band, be the majority in every honest anchor's view, with the honest anchors far and the tie rule
+// keeping the minority in place. An anchor that itself stands behind the position is not held on that
+// coefficient at all (known false in its view): it agrees with the majority. Where no anchor learned a
+// coefficient, the reference is what the anchors sent for it (the prior they trained towards) and known is
+// false: nobody is held to it, and the combination keeps it as it is.
+func reference(used []Used, exclude int64, cfg config.Aggregation, nCoef int) position {
+	p := position{make([]float64, nCoef), make([]float64, nCoef), make([]bool, nCoef), make([]bool, nCoef)}
+	n := countAnchors(used)
+	for j := range p.ref {
+		col, ids := stationMeans(used, j, func(u Used) bool { return u.Anchor && u.Kind.Informs(j) })
+		p.band[j] = cfg.ConsistencyK * cfg.ConsistencyFloor
+		if len(col) == 0 {
+			rest, _ := stationMeans(used, j, func(u Used) bool { return u.Anchor })
+			p.ref[j] = median(rest)
+			continue
+		}
+		radius := p.band[j]
+		if len(col) == 2 {
+			radius = pairSpread * p.band[j] / 2 // both within it of their midpoint: pairSpread bands apart at most
+		}
+		// The candidates for the centre of the largest group: every value, and the midpoint of two neighbours
+		// less than half the band apart (so that a cluster is seen from its middle, not from one of its members);
+		// the ones nearest the median first, so that a tie among equal groups goes to the middle. Two values have
+		// their midpoint only, the pair rule. The median of all is no candidate among more, nor any midpoint over
+		// a wider gap: between two camps it lies within the band of both, and merging them made one honest
+		// anchor's noise the other camp's majority
+		m := median(col)
+		centres := []float64{m}
+		if len(col) > 2 {
+			sorted := append([]float64(nil), col...)
+			sort.Float64s(sorted)
+			centres = append([]float64(nil), sorted...)
+			for i := 1; i < len(sorted); i++ {
+				if sorted[i]-sorted[i-1] <= radius/2 {
+					centres = append(centres, (sorted[i]+sorted[i-1])/2)
+				}
+			}
+			sort.SliceStable(centres, func(a, b int) bool { return math.Abs(centres[a]-m) < math.Abs(centres[b]-m) })
+		}
+		var behind, others []float64
+		agrees := false
+		for _, c := range centres {
+			var members, rest []float64
+			member := false
+			for i, v := range col {
+				if math.Abs(v-c) > radius {
+					continue
+				}
+				members = append(members, v)
+				if ids[i] != exclude {
+					rest = append(rest, v)
+				} else {
+					member = true
+				}
+			}
+			if len(members) > len(behind) {
+				behind, others, agrees = members, rest, member
+			}
+		}
+		if 2*len(behind) <= n {
+			p.disagree[j] = true
+			p.ref[j] = math.NaN()
+			if rest, _ := stationMeans(used, j, func(u Used) bool { return u.Anchor && !u.Kind.Informs(j) }); len(rest) > 0 {
+				p.ref[j] = median(rest)
+			}
+			continue
+		}
+		p.ref[j] = median(behind)
+		if agrees {
+			continue // behind the majority: the anchor is held to nothing here, and is not far
+		}
+		p.known[j] = true
+		centre := behind
+		if exclude != 0 && len(others) > 0 {
+			centre = others
+		}
+		p.ref[j] = median(centre)
+		if len(centre) >= 3 {
+			dev := make([]float64, len(centre))
+			for i, v := range centre {
+				dev[i] = math.Abs(v - p.ref[j])
+			}
+			p.band[j] = cfg.ConsistencyK * math.Max(1.4826*median(dev), cfg.ConsistencyFloor)
+		}
+	}
+	return p
+}
+
+// stationMeans averages coefficient j as each station sent it over its profiles that pass keep, in station order,
+// with the stations' ids.
+func stationMeans(used []Used, j int, keep func(Used) bool) ([]float64, []int64) {
+	sums, counts := map[int64]float64{}, map[int64]int{}
+	var ids []int64
+	for _, u := range used {
+		if !keep(u) {
+			continue
+		}
+		if counts[u.StationID] == 0 {
+			ids = append(ids, u.StationID)
+		}
+		sums[u.StationID] += u.Kind.Coef[j]
+		counts[u.StationID]++
 	}
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
-	S, caps := make([]float64, len(ids)), make([]float64, len(ids))
-	for i, id := range ids {
-		S[i], caps[i] = stations[id], cfg.MaxStationShare*trust[id]
+	out := make([]float64, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, sums[id]/float64(counts[id]))
 	}
+	return out, ids
+}
+
+// demote takes the anchor status away, for this combination, from the anchors far from the other anchors: outside
+// the band on farCount or more of the coefficients that every anchor learned, judged against the others. A
+// coefficient that only some learned says nothing here, however many: among the few that hold a second opinion
+// a pair of colluders would be the majority, and the honest anchors beside them the ones found far. Nothing is
+// demoted when the far anchors are half of all anchors or more: that is a tie, or a majority, which the rest
+// cannot judge. It reports whether anything changed.
+func demote(used []Used, cfg config.Aggregation, nCoef int) bool {
+	n := countAnchors(used)
+	learned := make([]int, nCoef)
+	for j := range learned {
+		_, ids := stationMeans(used, j, func(u Used) bool { return u.Anchor && u.Kind.Informs(j) })
+		learned[j] = len(ids)
+	}
+	far := map[int64]bool{}
+	for _, u := range used {
+		if !u.Anchor || far[u.StationID] {
+			continue
+		}
+		p := reference(used, u.StationID, cfg, nCoef)
+		for j := range p.known {
+			if learned[j] < n {
+				p.known[j] = false
+			}
+		}
+		probe := Used{Input: u.Input, Coef: append([]float64(nil), u.Kind.Coef...)}
+		hold(&probe, p.ref, p.band, p.known)
+		if probe.Far {
+			far[u.StationID] = true
+		}
+	}
+	if len(far) == 0 || 2*len(far) >= n {
+		return false
+	}
+	for i := range used {
+		if used[i].Anchor && far[used[i].StationID] {
+			used[i].Anchor, used[i].Demoted = false, true
+		}
+	}
+	return true
+}
+
+func finite(xs []float64) bool {
+	for _, x := range xs {
+		if math.IsNaN(x) || math.IsInf(x, 0) {
+			return false
+		}
+	}
+	return true
+}
+
+func median(xs []float64) float64 {
+	if len(xs) == 0 {
+		return 0
+	}
+	s := append([]float64(nil), xs...)
+	sort.Float64s(s)
+	if n := len(s); n%2 == 1 {
+		return s[n/2]
+	} else {
+		return (s[n/2-1] + s[n/2]) / 2
+	}
+}
+
+// hold pulls a profile's coefficients into the band around the reference and notes whether the profile was far:
+// outside the band on farCount or more of the coefficients it learned. What a station claims beyond the band is
+// never averaged in, so the influence of one contribution is bounded by the band, not by the coefficient bound of
+// the specification. A coefficient no anchor learned (known false) holds nobody.
+func hold(u *Used, ref, band []float64, known []bool) {
+	u.Outside, u.Clipped, u.MaxDist = 0, 0, 0
+	for j := range u.Coef {
+		d := u.Kind.Coef[j] - ref[j]
+		if !known[j] {
+			continue
+		}
+		if u.Kind.Informs(j) {
+			u.MaxDist = math.Max(u.MaxDist, math.Abs(d)/band[j])
+		}
+		if math.Abs(d) <= band[j] {
+			continue
+		}
+		if u.Kind.Informs(j) {
+			u.Outside++
+		}
+		u.Coef[j] = ref[j] + math.Copysign(band[j], d)
+		u.Clipped++
+	}
+	u.Far = u.Outside >= farCount
+}
+
+// weigh gives each input its share in the combination. The anchors share 1 − NewcomerShare among themselves by
+// their weight, capped per station; all other stations share NewcomerShare in equal parts, whatever they claim,
+// so that neither many stations nor big claims buy a newcomer more than its equal part of a fifth. Within a
+// station, the profiles split its share by their weight. The shares add up to 1.
+func weigh(used []Used, cfg config.Aggregation) []float64 {
+	weight, trust, anchor := map[int64]float64{}, map[int64]float64{}, map[int64]bool{}
+	for _, u := range used {
+		weight[u.StationID] += u.Evidence * u.Quality
+		trust[u.StationID] = u.Trust
+		anchor[u.StationID] = u.Anchor
+	}
+	var anchors, newcomers []int64
+	for id := range weight {
+		if anchor[id] {
+			anchors = append(anchors, id)
+		} else {
+			newcomers = append(newcomers, id)
+		}
+	}
+	sort.Slice(anchors, func(i, j int) bool { return anchors[i] < anchors[j] })
+	sort.Slice(newcomers, func(i, j int) bool { return newcomers[i] < newcomers[j] })
 	share := map[int64]float64{}
-	for i, p := range waterfill(S, caps) {
-		share[ids[i]] = p
+	newShare := 0.0
+	switch {
+	case len(anchors) == 0:
+		newShare = 1 // Combine refuses this case; the shares still add up to 1
+	case len(newcomers) > 0:
+		newShare = cfg.NewcomerShare
 	}
-	limitNewcomers(share, trust, cfg)
+	for _, id := range newcomers {
+		share[id] = newShare / float64(len(newcomers))
+	}
+	if len(anchors) > 0 {
+		S, caps := make([]float64, len(anchors)), make([]float64, len(anchors))
+		for i, id := range anchors {
+			S[i], caps[i] = weight[id], cfg.MaxStationShare*trust[id]
+		}
+		for i, p := range waterfill(S, caps) {
+			share[anchors[i]] = (1 - newShare) * p
+		}
+	}
 	out := make([]float64, len(used))
 	for i, u := range used {
-		out[i] = share[u.StationID] * u.Evidence * u.Quality / stations[u.StationID]
+		out[i] = share[u.StationID] * u.Evidence * u.Quality / weight[u.StationID]
 	}
 	return out
 }
 
 // waterfill turns the stations' weights S into shares that add up to 1 and stay below each station's cap: shares
 // follow the weights, and whatever a capped station would get beyond its cap goes to the others in proportion.
-// If the caps together are below 1 (few stations, or many new ones), every station is at its cap, and the shares
-// follow the caps, that is the trust.
+// If the caps together are below 1 (few stations), every station is at its cap, and the shares follow the caps,
+// that is the trust.
 func waterfill(S, caps []float64) []float64 {
 	n := len(S)
 	p := make([]float64, n)
@@ -203,32 +574,6 @@ func waterfill(S, caps []float64) []float64 {
 		}
 		if !changed {
 			return p
-		}
-	}
-}
-
-// limitNewcomers caps the share of all new stations together. Each new station is capped on its own already, but
-// many cheap stations would together still outweigh the established ones; together they get at most
-// NewcomerShare, which the trimming can then cut off. The relations within each group stay as they were. While
-// every station is new (at the start), there is nobody to protect, and nothing changes; the operator can mark
-// known stations as trusted.
-func limitNewcomers(share, trust map[int64]float64, cfg config.Aggregation) {
-	g, any := 0.0, false
-	for id, p := range share {
-		if trust[id] < cfg.NewcomerTrust {
-			g += p
-		} else {
-			any = true
-		}
-	}
-	if !any || g <= cfg.NewcomerShare {
-		return
-	}
-	for id := range share {
-		if trust[id] < cfg.NewcomerTrust {
-			share[id] *= cfg.NewcomerShare / g
-		} else {
-			share[id] *= (1 - cfg.NewcomerShare) / (1 - g)
 		}
 	}
 }
@@ -279,19 +624,4 @@ func quantile(vals, ws []float64, q float64) float64 {
 		}
 	}
 	return ps[len(ps)-1].v
-}
-
-// far reports whether a contribution lies far from the combination: its median distance per coefficient it
-// learned, measured in spreads, is above k. The floor on the spread keeps a few nearly identical profiles from
-// calling everything else far.
-func far(k spec.KindContribution, combined, spread []float64, limit float64) bool {
-	const minSpread = 0.1
-	var d []float64
-	for j := range k.Coef {
-		if k.Informs(j) {
-			d = append(d, math.Abs(k.Coef[j]-combined[j])/math.Max(spread[j], minSpread))
-		}
-	}
-	sort.Float64s(d)
-	return d[len(d)/2] > limit
 }

@@ -78,7 +78,8 @@ for the operator) or `invitation` (a code is required).
 invitations created with `-bound`.
 
 Signed with the new key itself; the key header must be the fingerprint of `public_key`. This proves that the
-station holds the private key.
+station holds the private key; a public key of small order, for which one signature fits every message, is
+refused (`400 bad_key`).
 
 | Status | Body or error code | Meaning |
 |---|---|---|
@@ -91,7 +92,10 @@ station holds the private key.
 | 403 | `binding_invalid` | the binding is not signed by a known key, expired, or names another station or invitation |
 | 403 | `revoked` | this key was revoked; a station must create a new key to join again |
 | 429 | `rate_limited` | too many joins from this address (`Retry-After`) |
-| 429 | `join_limit` | the server admits no more new stations today (`Retry-After`) |
+| 429 | `join_limit` | the server admits no more new stations today, or this key has come back five times today (`Retry-After`); counted inside the join, so that parallel joins cannot slip past it |
+
+A key or account that left within 30 days comes back with the lower of `trust_start` and the trust it had, and
+the key with its age; a key may come back five times a day, then `join_limit`.
 
 ### `GET /v1/me`
 
@@ -133,23 +137,29 @@ Query: `feature_version` and `detector_version` (required), `chain_class` (optio
 ```json
 {
   "published": {"version": 12, "status": "published", "feature_version": 1, "detector_version": "1",
-                "chain_class": "all", "created_at": …, "published_at": …, "withdrawn_at": null, "jws": "…"},
+                "chain_class": "all", "created_at": …, "published_at": …, "withdrawn_at": null, "jws": "…",
+                "state_jws": "…"},
   "candidate": null
 }
 ```
 
 For a chain class, the server returns the model of that class if there is one and the model over all classes
-otherwise; `chain_class` in the answer says which. The response has an `ETag`; with `If-None-Match` the server
-answers `304 Not Modified` when neither the published model nor the candidate changed, so a station can poll often
-at no cost.
+otherwise; `chain_class` in the answer says which. `published` is the model published last, as long as it is
+still published: a withdrawal does not bring an older model back. The response has an `ETag`; with
+`If-None-Match` the server answers `304 Not Modified` when neither the published model nor the candidate changed,
+so a station can poll often at no cost.
 
 The model itself is the JWS in `jws` (see `spec/signing.md`). A station verifies it with the accepted server key
-before it parses the payload, and checks the payload against `spec/v1/global-model.schema.json`.
+before it parses the payload, and checks the payload against `spec/v1/global-model.schema.json`. `state_jws` is
+the hub's signed statement about the entry (`typ` `vinyl-mind-state+json`, payload `spec`
+`vinyl-mind/model-state`, `server`, `version`, `status`, `published_at`, `withdrawn_at`, `seq`, `at`), so that a
+station can keep a status it was told with proof of who told it; verifying it is optional. `seq` counts the
+model's status changes: a statement with a smaller `seq` than one seen before is older, whatever `at` says.
 
 ### `GET /v1/models/{version}`
 
 The same entry for one version. A withdrawn model has `status: "withdrawn"`, a `reason` and no `jws`: a station
-that uses it drops it and falls back to its local model or the next published one.
+that uses it drops it and falls back to its local model or the published one, if there is one.
 
 ### `PUT /v1/profiles/{profile}/checks/{version}`
 
@@ -173,10 +183,13 @@ A profile does not need a contribution of its own to report: a station may use g
 | 401 | `unsigned`, `malformed_signature` | headers missing or malformed: a bug in the client |
 | 401 | `stale` | timestamp more than 300 s off: check the clock (compare with `time` from `/v1/server`) |
 | 401 | `bad_signature` | the signature does not verify: a bug, or the request was changed on the way |
-| 401 | `replayed` | the nonce was used before: create a new nonce per request |
+| 401 | `replayed` | the nonce was used before: create a new nonce per request (a replay does not use the station's quota) |
 | 401 | `unknown_key` | the key has not joined (or the station left): join again |
 | 403 | `pending` | waiting for the operator's approval: try later |
 | 403 | `revoked` | the operator revoked the key: stop, tell the user. Leaving (`DELETE /v1/me`) is refused too: what the station sent is already deleted, and the key stays on record so that it cannot join again |
 | 400 | `bad_client` | the `Vinyl-Mind-Client` header is missing or not `name/version` |
 | 403 | `client_not_accepted` | this version is not accepted (any more): tell the user to update |
-| 429 | `rate_limited` | too many requests: wait as `Retry-After` says |
+| 429 | `rate_limited` | too many requests: wait as `Retry-After` says (address limits count per IPv4 address or IPv6 /64) |
+| 400 | `bad_forwarded` | a reverse proxy forwarded an entry that is not an address: a proxy misconfiguration |
+| 411, 413 | `length_required`, `too_large` | a body needs a Content-Length, and at most 16 KiB |
+| 415 | `unsupported_media_type` | the body must be plain `application/json` (no other type, no Content-Encoding) |

@@ -108,10 +108,10 @@ Everything that changes the server is a command; over the network nothing can be
 | `vinyl-mind fingerprint` | the server key's fingerprint, to publish |
 | `vinyl-mind invite -uses 1 -days 14` | a new invitation code, shown once and kept only as a hash |
 | `vinyl-mind invitations`, `revoke-invitation <id>` | list and revoke codes |
-| `vinyl-mind stations` | stations with status, trust, profiles and last contact |
+| `vinyl-mind stations` | stations with status, trust, profiles, last contact, and since when the last combination that used the station found it far (*far since*): an anchor in that state decides nothing until a combination finds it in line again |
 | `vinyl-mind approve <fingerprint>` | admit a waiting station (`join_mode = "approval"`) |
 | `vinyl-mind revoke <fingerprint>` | revoke a key and delete what the station sent |
-| `vinyl-mind trust <fingerprint> <0..1>` | set a station's trust, for example 1 for the stations you know, so that new stations cannot outweigh them from the start |
+| `vinyl-mind trust <fingerprint> <0..1\|auto>` | set a station's trust as the operator: 1 makes it an **anchor**, the reference every other station is held to and the word that publishes models; `auto` hands it back to the automatic trust. Either lifts the doubt about a station found far (*far since*): the operator has looked. Mark at least one station you know before anything is combined: without an anchor there is no model ([aggregation.md](aggregation.md)) |
 | `vinyl-mind revoke-invitation-stations <id>` | revoke a code and every station that joined with it, for example when one station is disconnected |
 | `vinyl-mind revoke-account <account>` | revoke every station of an account, when the account service closes or blocks it |
 | `vinyl-mind invite -bound` | a code that is valid only with an account service's binding (`docs/connect.md`), for the pool of an account service |
@@ -120,16 +120,18 @@ Everything that changes the server is a command; over the network nothing can be
 | `vinyl-mind publish <version>`, `withdraw <version> -reason "…"` | the operator's decisions, for example at the start, when too few stations report |
 | `vinyl-mind backup [-keep n] <dir>` | consistent copy of database and server key, while the server runs; `-keep 3` then keeps only the newest three there (for example before every update) |
 | `vinyl-mind version -json` | version, the schema it writes and the schema of the database, without changing anything |
-| `vinyl-mind access-log [-n 50]` | the newest requests with client address: check `trusted_proxies`, look into abuse |
+| `vinyl-mind access-log [-n 50]` | the newest requests with client address and error code: check `trusted_proxies`, look into abuse; refused requests of unknown senders appear as one line per address and answer with their count |
+| `vinyl-mind events [-n 50]` | the event log: joins and departures, trust changes with their reasons, anchors far from the other anchors (`anchor_demoted`, `anchor_far`), group states, candidates, publications and withdrawals, and the operator's own commands |
+| `vinyl-mind status [-prom]` | counts of stations by status and trust class, rows per table, models by status, the last combination and the state of every group, anchors and stations in doubt, joins and refusals of the last day; `-prom` writes the Prometheus text format for a textfile collector |
 
 In a container: `docker compose exec vinyl-mind vinyl-mind <command>`. With `-json`, `invite`, `invitations`,
 `stations` and `revoke-invitation-stations` write one JSON object per line to stdout and nothing else, for scripts
 such as an account service that hands out invitations; errors go to stderr with a non-zero exit code.
 
 If invitations are handed out automatically (sign-up on a website), new stations are cheap. The server limits them
-to `joins_per_day` (20) in total, counts all new stations together as at most `newcomer_share` of a model
-([aggregation.md](aggregation.md)), and lets only stations older than `min_vote_age_days` vote. Mark the stations
-you know as trusted before that.
+to `joins_per_day` (20) in total, gives all stations you have not vouched for together `newcomer_share` of a model
+in equal parts ([aggregation.md](aggregation.md)), and lets only your anchors decide about publication. Mark the
+stations you know as anchors (`trust … 1`) before that; everything else follows from them.
 
 ## The server key and backups
 
@@ -144,12 +146,23 @@ the key file. Rotating the key is not supported yet (see the open points in the 
 
 ## Updates
 
+Before an update, back up with the running version (`vinyl-mind backup`, as in the example deploy); the new
+version brings the database to its schema at the first start, and the old version then refuses to start. `backup`
+itself never migrates. After an update to 0.1.8 or later, look at `vinyl-mind stations`: the stations the operator
+set to full trust before are anchors now; a station whose trust had grown to 1 by itself is not, and the operator
+decides with `trust … 1`. Without an anchor nothing is combined, and without an anchor that does not contribute
+nothing is published automatically (`vinyl-mind status`, the startup log). Candidates built before 0.1.8 carry
+no record of their contributors, so the stations behind them can still vote for them; decide about those by hand
+(`publish`, `withdraw`) or wait for the next candidate.
+
 Replace the image and restart. The database records its schema version; a server older than the database refuses
 to start rather than damaging it. Stations keep working while the server is down: they retry later and keep using
 their local models.
 
 ## Logs
 
-The server writes to standard error: start and stop, new candidates, published and withdrawn models, trust changes
-and errors, never request bodies. The access log with client addresses is in the database and deleted after
-`access_log_days` (14). See `docs/privacy.md` for everything that is stored.
+The server writes to standard error: start and stop, what the configuration admits, new candidates, published and
+withdrawn models, trust changes, refused signatures and replays, and errors, never request bodies. The event log in
+the database (`vinyl-mind events`) keeps admissions, departures, trust changes, publications and the operator's
+commands; the access log with client addresses is deleted after `access_log_days` (14). See `docs/privacy.md` for
+everything that is stored.

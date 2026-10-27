@@ -33,12 +33,14 @@ type Aggregation struct {
 	MinClassProfiles int     `toml:"min_class_profiles"` // before a chain class gets a model of its own
 	TrustStart       float64 `toml:"trust_start"`
 	TrustMin         float64 `toml:"trust_min"`
-	TrustStep        float64 `toml:"trust_step"`     // gained per day with consistent contributions or reports
-	TrustPenalty     float64 `toml:"trust_penalty"`  // lost per contribution far from the consensus
-	ConsistencyK     float64 `toml:"consistency_k"`  // "far" = more than k spreads from the combined coefficient
-	MaxEvidence      float64 `toml:"max_evidence"`   // cap of the weighted examples one profile can claim
-	NewcomerTrust    float64 `toml:"newcomer_trust"` // stations below this trust count as new (default: full trust)
-	NewcomerShare    float64 `toml:"newcomer_share"` // all new stations together, at most this share of the mean
+	TrustStep        float64 `toml:"trust_step"`        // gained per day with consistent contributions or reports
+	TrustAutoMax     float64 `toml:"trust_auto_max"`    // automatic gains stop here; the full level is the operator's to give
+	TrustPenalty     float64 `toml:"trust_penalty"`     // lost per day with a changed contribution far from the reference
+	ConsistencyK     float64 `toml:"consistency_k"`     // the band around the reference: k robust spreads
+	ConsistencyFloor float64 `toml:"consistency_floor"` // the least spread the band is built from (coefficient units)
+	MaxEvidence      float64 `toml:"max_evidence"`      // cap of the weighted examples one profile can claim (a station: twice)
+	NewcomerTrust    float64 `toml:"newcomer_trust"`    // stations below this trust count as new (default: full trust)
+	NewcomerShare    float64 `toml:"newcomer_share"`    // all new stations together, at most this share of the mean
 }
 
 // Publication controls when candidates are published and models withdrawn.
@@ -49,6 +51,7 @@ type Publication struct {
 	Tolerance         float64 `toml:"tolerance"`           // how much worse than local still counts as not worse
 	CombineIntervalS  int     `toml:"combine_interval_s"`  // background combining; 0 = only by command
 	MinVoteAgeDays    int     `toml:"min_vote_age_days"`   // a station votes on models only after this many days
+	ReviewHours       int     `toml:"review_hours"`        // a candidate is neither published nor replaced before this age
 }
 
 // Clients lists the client software and detector versions that may take part. This keeps out versions whose
@@ -89,6 +92,11 @@ func (c Clients) AcceptsDetector(version string) bool {
 type Accounts struct {
 	ConnectURL  string   `toml:"connect_url"`  // where stations connect by signing in; empty: no account service
 	BindingKeys []string `toml:"binding_keys"` // public keys (base64url, 32 bytes) whose bindings are accepted
+	// Audience is this hub's canonical URL (for example "https://hub.example.org"). A binding that names a hub
+	// (aud) is accepted only if it names this one; without an audience such bindings are refused. With
+	// AudienceRequired every binding must name the hub, once every account service does.
+	Audience         string `toml:"audience"`
+	AudienceRequired bool   `toml:"audience_required"`
 }
 
 // Config is the whole configuration.
@@ -126,11 +134,11 @@ func Default() Config {
 		Aggregation: Aggregation{
 			Method: "trimmed_mean", Trim: 0.2, ManualWeight: 5, MaxEstError: 0.30, MaxStationShare: 0.25,
 			MinProfiles: 3, MinStations: 2, MinClassProfiles: 5,
-			TrustStart: 0.25, TrustMin: 0.05, TrustStep: 0.1, TrustPenalty: 0.15, ConsistencyK: 3,
-			MaxEvidence: 5000, NewcomerTrust: 1, NewcomerShare: 0.2,
+			TrustStart: 0.25, TrustMin: 0.05, TrustStep: 0.1, TrustAutoMax: 0.9, TrustPenalty: 0.15,
+			ConsistencyK: 3, ConsistencyFloor: 0.25, MaxEvidence: 5000, NewcomerTrust: 1, NewcomerShare: 0.2,
 		},
 		Publication: Publication{Auto: true, MinReports: 3, MinReportStations: 2, Tolerance: 0.01,
-			CombineIntervalS: 3600, MinVoteAgeDays: 7},
+			CombineIntervalS: 3600, MinVoteAgeDays: 7, ReviewHours: 48},
 	}
 }
 
@@ -193,6 +201,12 @@ func (c *Config) Check() error {
 	if a.TrustMin <= 0 || a.TrustStart < a.TrustMin || a.TrustStart > 1 {
 		bad("aggregation: need 0 < trust_min <= trust_start <= 1")
 	}
+	if a.TrustAutoMax < a.TrustStart || a.TrustAutoMax >= a.NewcomerTrust {
+		bad("aggregation: need trust_start <= trust_auto_max < newcomer_trust (automatic trust never reaches the full level)")
+	}
+	if a.ConsistencyK <= 0 || a.ConsistencyFloor <= 0 {
+		bad("aggregation: consistency_k and consistency_floor must be positive")
+	}
 	if a.MinProfiles < 1 || a.MinStations < 1 || a.MinClassProfiles < a.MinProfiles {
 		bad("aggregation: need min_profiles, min_stations >= 1 and min_class_profiles >= min_profiles")
 	}
@@ -200,8 +214,8 @@ func (c *Config) Check() error {
 		a.NewcomerShare >= 1 {
 		bad("aggregation: need max_evidence > 0, 0 < newcomer_trust <= 1 and 0 < newcomer_share < 1")
 	}
-	if p.MinVoteAgeDays < 0 || c.JoinsPerDay < 1 {
-		bad("need publication.min_vote_age_days >= 0 and joins_per_day >= 1")
+	if p.MinVoteAgeDays < 0 || p.ReviewHours < 0 || c.JoinsPerDay < 1 {
+		bad("need publication.min_vote_age_days >= 0, publication.review_hours >= 0 and joins_per_day >= 1")
 	}
 	if p.MinReports < 1 || p.MinReportStations < 1 {
 		bad("publication: min_reports and min_report_stations must be at least 1")
@@ -219,6 +233,15 @@ func (c *Config) Check() error {
 		if err != nil || p.Scheme != "https" || p.Host == "" || p.User != nil || p.Fragment != "" || p.RawQuery != "" {
 			bad("accounts.connect_url must be an https URL without user, query or fragment, not %q", u)
 		}
+	}
+	if u := c.Accounts.Audience; u != "" {
+		p, err := url.Parse(u)
+		if err != nil || p.Scheme != "https" || p.Host == "" || p.User != nil || p.Path != "" || p.RawQuery != "" ||
+			p.Fragment != "" || strings.ToLower(u) != u {
+			bad("accounts.audience must be this hub's canonical URL (https, lower case, no path), not %q", u)
+		}
+	} else if c.Accounts.AudienceRequired {
+		bad("accounts.audience_required needs accounts.audience")
 	}
 	c.bindingKeys = map[string]ed25519.PublicKey{}
 	for _, k := range c.Accounts.BindingKeys {

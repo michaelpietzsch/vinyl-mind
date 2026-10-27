@@ -10,6 +10,7 @@ import (
 
 	"github.com/michaelpietzsch/vinyl-mind/internal/auth"
 	"github.com/michaelpietzsch/vinyl-mind/internal/hub"
+	"github.com/michaelpietzsch/vinyl-mind/internal/keys"
 	"github.com/michaelpietzsch/vinyl-mind/internal/store"
 	"github.com/michaelpietzsch/vinyl-mind/spec"
 )
@@ -91,12 +92,22 @@ func (s *Server) deleteContribution(w http.ResponseWriter, r *http.Request, st *
 
 // ─── Models ────────────────────────────────────────────────────────────────
 
-func entry(m *store.Model) map[string]any {
+// entry is what a station sees of a model. Besides the signed model it carries the hub's signed statement about
+// the model's status (state_jws), so that a status cannot be changed on the way without the server key.
+func (s *Server) entry(m *store.Model) map[string]any {
 	if m == nil {
 		return nil
 	}
+	// seq grows with every status change of the model, so that a station keeping a statement can tell the
+	// newer from the older whatever the clocks did
+	state, _ := json.Marshal(map[string]any{
+		"spec": "vinyl-mind/model-state", "server": s.fp, "version": m.Version, "status": m.Status,
+		"published_at": unix(m.PublishedAt), "withdrawn_at": unix(m.WithdrawnAt), "seq": m.StateRev,
+		"at": s.now().Unix(),
+	})
 	e := map[string]any{
-		"version": m.Version, "status": m.Status, "feature_version": m.Group.FeatureVersion,
+		"state_jws": keys.JWSSignTyped(s.key, keys.StateType, state),
+		"version":   m.Version, "status": m.Status, "feature_version": m.Group.FeatureVersion,
 		"detector_version": m.Group.DetectorVersion, "chain_class": m.Group.ChainClass,
 		"created_at": m.CreatedAt.Unix(), "published_at": unix(m.PublishedAt), "withdrawn_at": unix(m.WithdrawnAt),
 	}
@@ -109,17 +120,24 @@ func entry(m *store.Model) map[string]any {
 	return e
 }
 
-// pick returns the newest model with the status for the station's chain class, or for all classes if its class
-// has none.
+// pick returns the model with the status for the station's chain class, or for all classes if its class has
+// none: the newest candidate, or the model published last, as long as it is still published (a withdrawal does
+// not hand the place back to an older model).
 func (s *Server) pick(g store.Group, status string) (*store.Model, error) {
-	if g.ChainClass != spec.ClassAll {
-		m, err := s.store.Latest(g, status)
+	for _, class := range []string{g.ChainClass, spec.ClassAll} {
+		g.ChainClass = class
+		var m *store.Model
+		var err error
+		if status == store.Published {
+			m, err = s.store.Published(g)
+		} else {
+			m, err = s.store.Latest(g, status)
+		}
 		if err != nil || m != nil {
 			return m, err
 		}
-		g.ChainClass = spec.ClassAll
 	}
-	return s.store.Latest(g, status)
+	return nil, nil
 }
 
 // models answers what a station polls for: the newest published model and the current candidate to check. The
@@ -161,7 +179,7 @@ func (s *Server) models(w http.ResponseWriter, r *http.Request, _ *store.Station
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"published": entry(pub), "candidate": entry(cand)})
+	writeJSON(w, http.StatusOK, map[string]any{"published": s.entry(pub), "candidate": s.entry(cand)})
 }
 
 func (s *Server) model(w http.ResponseWriter, r *http.Request, _ *store.Station, _ []byte) {
@@ -179,7 +197,7 @@ func (s *Server) model(w http.ResponseWriter, r *http.Request, _ *store.Station,
 		writeError(w, http.StatusNotFound, "not_found", "no such model")
 		return
 	}
-	writeJSON(w, http.StatusOK, entry(m))
+	writeJSON(w, http.StatusOK, s.entry(m))
 }
 
 // ─── Check reports ─────────────────────────────────────────────────────────

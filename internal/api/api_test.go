@@ -77,6 +77,8 @@ func (e *env) station() *client.Station {
 }
 
 // active returns a station that joined with an invitation.
+// active returns a station that joined with an invitation, trusted by the operator: these tests are about the
+// protocol, and models only form around stations the operator trusts.
 func (e *env) active() *client.Station {
 	e.t.Helper()
 	s := e.station()
@@ -84,6 +86,13 @@ func (e *env) active() *client.Station {
 	r, err := s.Join(&code)
 	if err != nil || r.Status != http.StatusCreated {
 		e.t.Fatalf("join: %v %s", err, r.Body)
+	}
+	st, err := e.store.Station(keys.Fingerprint(s.Key.Public().(ed25519.PublicKey)))
+	if err != nil || st == nil {
+		e.t.Fatalf("station after join: %v", err)
+	}
+	if err := e.store.SetOperatorTrust(st.ID, 1, true); err != nil {
+		e.t.Fatal(err)
 	}
 	return s
 }
@@ -315,6 +324,7 @@ func TestModelsAndReports(t *testing.T) {
 	report := example(t, "check-report.json")
 	delete(report["kinds"].(map[string]any), "tick")
 	path := func(profile string) string { return fmt.Sprintf("/v1/profiles/%s/checks/%d", profile, v) }
+	// The contributors' own reports do not publish their candidate; two other anchors do, after the review window
 	do(t, stations[0], "PUT", path(profileA), report, 200)
 	do(t, stations[0], "PUT", path("profile-other-aaaaaa"), report, 200)
 	r = do(t, stations[1], "PUT", path(profileA), report, 200)
@@ -323,8 +333,17 @@ func TestModelsAndReports(t *testing.T) {
 		ModelStatus string `json:"model_status"`
 	}
 	_ = r.JSON(&res)
+	if res.Verdict != store.NotWorse || res.ModelStatus != store.Candidate {
+		t.Fatalf("contributors cannot publish their own candidate: %s", r.Body)
+	}
+	e.now = e.now.Add(49 * time.Hour)
+	voters := []*client.Station{e.active(), e.active()}
+	do(t, voters[0], "PUT", path(profileA), report, 200)
+	do(t, voters[0], "PUT", path("profile-other-aaaaaa"), report, 200)
+	r = do(t, voters[1], "PUT", path(profileA), report, 200)
+	_ = r.JSON(&res)
 	if res.Verdict != store.NotWorse || res.ModelStatus != store.Published {
-		t.Fatalf("third report from a second station publishes: %s", r.Body)
+		t.Fatalf("third report from a second voting anchor publishes: %s", r.Body)
 	}
 	_ = do(t, s, "GET", q, nil, 200).JSON(&ms)
 	if ms.Published == nil || ms.Candidate != nil {
@@ -422,15 +441,28 @@ func TestClientAddressBehindProxy(t *testing.T) {
 	req.Header.Set("X-Forwarded-For", "198.51.100.7, 203.0.113.9")
 	resp, _ := http.DefaultClient.Do(req)
 	resp.Body.Close()
+	e.srv.Flush() // requests without a key are counted and written at the flush
 	log, _ := e.store.AccessLog(1)
-	if log[0].Address != "203.0.113.9" {
-		t.Fatalf("rightmost untrusted hop expected, got %q", log[0].Address)
+	if log[0].Address != "203.0.113.9" || log[0].N != 1 {
+		t.Fatalf("rightmost untrusted hop expected, got %+v", log[0])
+	}
+	// The proxy's own request (a health check) carries no X-Forwarded-For and is the proxy's
+	req, _ = http.NewRequest("GET", e.http.URL+"/v1/server", nil)
+	resp, _ = http.DefaultClient.Do(req)
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("no X-Forwarded-For behind a trusted proxy: %d", resp.StatusCode)
+	}
+	e.srv.Flush()
+	if log, _ = e.store.AccessLog(1); log[0].Address != "127.0.0.1" {
+		t.Fatalf("the proxy's own request: %+v", log[0])
 	}
 	e2 := newEnv(t, nil)
 	req, _ = http.NewRequest("GET", e2.http.URL+"/v1/server", nil)
 	req.Header.Set("X-Forwarded-For", "203.0.113.9")
 	resp, _ = http.DefaultClient.Do(req)
 	resp.Body.Close()
+	e2.srv.Flush()
 	if log, _ = e2.store.AccessLog(1); log[0].Address != "127.0.0.1" {
 		t.Fatalf("an untrusted peer's X-Forwarded-For must be ignored, got %q", log[0].Address)
 	}

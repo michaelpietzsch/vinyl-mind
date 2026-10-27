@@ -11,8 +11,10 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"maps"
+	"math"
 	"net/http"
 	"os"
 	"os/signal"
@@ -20,6 +22,7 @@ import (
 	"regexp"
 	"slices"
 	"strconv"
+	"strings"
 	"syscall"
 	"text/tabwriter"
 	"time"
@@ -58,7 +61,9 @@ Stations
   revoke <fingerprint>        revoke a station's key and delete what it sent
   revoke-account <account> [-json]
                               revoke every station of an account (from an account service's binding)
-  trust <fingerprint> <0..1>  set a station's trust, e.g. 1 for stations you know
+  trust <fingerprint> <0..1|auto>
+                              set a station's trust as the operator: 1 makes it an anchor (the reference the
+                              others are held to); "auto" hands it back to the automatic trust
 
 With -json, commands write one JSON object per line to stdout and nothing else; errors go to stderr with a
 non-zero exit code.
@@ -69,7 +74,12 @@ Models
   publish <version>           publish a model regardless of reports
   withdraw <version> [-reason text]
 
-  access-log [-n 50]          the newest requests: time, client address, station key, request, status
+  access-log [-n 50]          the newest requests: time, client address, station key, request, status, code;
+                              refused requests of unknown senders are counted per address (N > 1)
+  events [-n 50]              the newest events: admissions, departures, trust changes, publications, operator
+                              commands
+  status [-prom]              counts of stations, contributions, models, refusals; -prom in the text format of a
+                              Prometheus textfile collector
   backup [-keep n] <dir>      write a consistent copy of the database and the server key into dir; -keep: then
                               remove all but the newest n copies there
   prune                       forget expired nonces and old access log entries
@@ -129,7 +139,10 @@ type app struct {
 	log   *slog.Logger
 }
 
-func open(cfg config.Config) (*app, error) {
+// open prepares the data directory, the server key and the database. Every command but backup brings the
+// database to this version's schema; a backup copies it as it is, so that a copy made with a newer server does
+// not take the way back to the older one.
+func open(cfg config.Config, migrate bool) (*app, error) {
 	if err := os.MkdirAll(cfg.DataDir, 0o700); err != nil {
 		return nil, err
 	}
@@ -141,7 +154,12 @@ func open(cfg config.Config) (*app, error) {
 	if err != nil {
 		return nil, err
 	}
-	st, err := store.Open(cfg.DBURL())
+	var st *store.Store
+	if migrate {
+		st, err = store.Open(cfg.DBURL())
+	} else {
+		st, err = store.OpenAsIs(cfg.DBURL())
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -167,12 +185,13 @@ func versionArg(args []string) (int64, error) {
 func run(cfg config.Config, cmd string, args []string) error {
 	known := map[string]bool{"serve": true, "init": true, "fingerprint": true, "invite": true, "invitations": true,
 		"revoke-invitation": true, "revoke-invitation-stations": true, "revoke-account": true, "trust": true, "stations": true, "approve": true, "revoke": true, "combine": true, "models": true,
-		"publish": true, "withdraw": true, "prune": true, "backup": true, "access-log": true}
+		"publish": true, "withdraw": true, "prune": true, "backup": true, "access-log": true, "events": true,
+		"status": true}
 	if !known[cmd] {
 		fmt.Fprint(os.Stderr, usage)
 		return fmt.Errorf("unknown command %q", cmd)
 	}
-	a, err := open(cfg)
+	a, err := open(cfg, cmd != "backup")
 	if err != nil {
 		return err
 	}
@@ -207,6 +226,7 @@ func run(cfg config.Config, cmd string, args []string) error {
 		if err != nil {
 			return err
 		}
+		a.event(now, "invite", strconv.FormatInt(id, 10), fmt.Sprintf("uses %d, days %d, bound %v", *uses, *days, *bound))
 		if *asJSON {
 			return jsonLine(map[string]any{"id": id, "code": code, "max_uses": *uses, "expires_at": unix(exp),
 				"bound": *bound})
@@ -248,7 +268,10 @@ func run(cfg config.Config, cmd string, args []string) error {
 		if err != nil {
 			return err
 		}
-		return found(a.store.RevokeInvitation(id))
+		if err := found(a.store.RevokeInvitation(id)); err != nil {
+			return err
+		}
+		a.event(now, "revoke-invitation", s, "")
 	case "revoke-invitation-stations":
 		f := flag.NewFlagSet("revoke-invitation-stations", flag.ExitOnError)
 		asJSON := f.Bool("json", false, "one JSON object per revoked station")
@@ -275,6 +298,7 @@ func run(cfg config.Config, cmd string, args []string) error {
 			return err
 		}
 		for _, fp := range fps {
+			a.event(now, "revoke", fp, "account "+account+" revoked")
 			if *asJSON {
 				if err := jsonLine(map[string]any{"fingerprint": fp, "account": account}); err != nil {
 					return err
@@ -289,13 +313,9 @@ func run(cfg config.Config, cmd string, args []string) error {
 		if err != nil {
 			return err
 		}
-		v, err := arg(args, 1, "trust between 0 and 1")
+		v, err := arg(args, 1, "trust between 0 and 1, or auto")
 		if err != nil {
 			return err
-		}
-		t, err := strconv.ParseFloat(v, 64)
-		if err != nil || t < 0 || t > 1 {
-			return fmt.Errorf("trust must be a number between 0 and 1, not %q", v)
 		}
 		st, err := a.store.Station(fp)
 		if err != nil {
@@ -304,7 +324,22 @@ func run(cfg config.Config, cmd string, args []string) error {
 		if st == nil {
 			return errors.New("not found")
 		}
-		return a.store.SetTrust(st.ID, t, nil)
+		if v == "auto" {
+			t := math.Min(st.Trust, cfg.Aggregation.TrustAutoMax)
+			if err := a.store.SetOperatorTrust(st.ID, t, false); err != nil {
+				return err
+			}
+			a.event(now, "trust", fp, fmt.Sprintf("%.3f to %.3f, automatic again", st.Trust, t))
+			return nil
+		}
+		t, err := strconv.ParseFloat(v, 64)
+		if err != nil || t < 0 || t > 1 {
+			return fmt.Errorf("trust must be a number between 0 and 1 or \"auto\", not %q", v)
+		}
+		if err := a.store.SetOperatorTrust(st.ID, t, true); err != nil {
+			return err
+		}
+		a.event(now, "trust", fp, fmt.Sprintf("%.3f to %.3f, set by the operator", st.Trust, t))
 	case "stations":
 		f := flag.NewFlagSet("stations", flag.ExitOnError)
 		asJSON := f.Bool("json", false, "one JSON object per line")
@@ -319,16 +354,20 @@ func run(cfg config.Config, cmd string, args []string) error {
 					"profiles": s.Profiles, "joined_at": s.JoinedAt.Unix(), "last_seen_at": unix(s.LastSeenAt),
 					"invitation_id": s.InvitationID, "account": nullable(s.Account),
 					"contributions": s.Contributions, "last_contribution_at": unix(s.LastContrib),
-					"examples": s.Examples, "reports": s.Reports}); err != nil {
+					"examples": s.Examples, "reports": s.Reports, "far_at": unix(s.FarAt)}); err != nil {
 					return err
 				}
 			}
 			return nil
 		}
-		fmt.Fprintln(out, "FINGERPRINT\tSTATUS\tTRUST\tPROFILES\tJOINED\tLAST SEEN")
+		fmt.Fprintln(out, "FINGERPRINT\tSTATUS\tTRUST\tPROFILES\tJOINED\tLAST SEEN\tFAR SINCE")
 		for _, s := range sts {
-			fmt.Fprintf(out, "%s\t%s\t%.2f\t%d\t%s\t%s\n", s.KeyFP, s.Status, s.Trust, s.Profiles,
-				s.JoinedAt.UTC().Format(time.DateTime), when(s.LastSeenAt))
+			far := "-"
+			if s.FarAt != nil {
+				far = when(s.FarAt)
+			}
+			fmt.Fprintf(out, "%s\t%s\t%.2f\t%d\t%s\t%s\t%s\n", s.KeyFP, s.Status, s.Trust, s.Profiles,
+				s.JoinedAt.UTC().Format(time.DateTime), when(s.LastSeenAt), far)
 		}
 	case "approve", "revoke":
 		fp, err := arg(args, 0, "station fingerprint")
@@ -342,7 +381,10 @@ func run(cfg config.Config, cmd string, args []string) error {
 		if cmd == "revoke" {
 			status = store.Revoked
 		}
-		return found(a.store.SetStatus(fp, status, now))
+		if err := found(a.store.SetStatus(fp, status, now)); err != nil {
+			return err
+		}
+		a.event(now, cmd, fp, "")
 	case "combine":
 		f := flag.NewFlagSet("combine", flag.ExitOnError)
 		dry := f.Bool("dry-run", false, "show the combination without storing anything")
@@ -358,6 +400,12 @@ func run(cfg config.Config, cmd string, args []string) error {
 				if r.Coef == nil {
 					result = r.Reason
 				}
+				if n := demoted(r); n > 0 {
+					result += fmt.Sprintf(", %d anchors held like newcomers", n)
+				}
+				if len(r.Kept) > 0 {
+					result += fmt.Sprintf(", coefficients %v kept: two anchors disagree", r.Kept)
+				}
 				fmt.Fprintf(out, "%d\t%s\t%s\t%s\t%d\t%d\t%s\n", o.Group.FeatureVersion, o.Group.DetectorVersion,
 					o.Group.ChainClass, kind, r.Profiles, r.Stations, result)
 			}
@@ -372,15 +420,15 @@ func run(cfg config.Config, cmd string, args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Fprintln(out, "VERSION\tFEATURES\tDETECTOR\tCLASS\tSTATUS\tPROFILES\tSTATIONS\tNOT WORSE\tWORSE\tCREATED\tREASON")
+		fmt.Fprintln(out, "VERSION\tFEATURES\tDETECTOR\tCLASS\tSTATUS\tPROFILES\tSTATIONS\tNOT WORSE\tWORSE\tANCHORS +/-\tCREATED\tREASON")
 		for _, m := range ms {
 			t, err := a.hub.Tally(m.Version, now)
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(out, "%d\t%d\t%s\t%s\t%s\t%d\t%d\t%d\t%d\t%s\t%s\n", m.Version, m.Group.FeatureVersion,
-				m.Group.DetectorVersion, m.Group.ChainClass, m.Status, t.Reports, t.Stations, t.NotWorse, t.Worse,
-				m.CreatedAt.UTC().Format(time.DateTime), m.Reason)
+			fmt.Fprintf(out, "%d\t%d\t%s\t%s\t%s\t%d\t%d\t%d\t%d\t%.1f/%.1f\t%s\t%s\n", m.Version,
+				m.Group.FeatureVersion, m.Group.DetectorVersion, m.Group.ChainClass, m.Status, t.Reports, t.Stations,
+				t.NotWorse, t.Worse, t.AnchorNotWorse, t.AnchorWorse, m.CreatedAt.UTC().Format(time.DateTime), m.Reason)
 		}
 	case "publish":
 		v, err := versionArg(args)
@@ -407,11 +455,30 @@ func run(cfg config.Config, cmd string, args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Fprintln(out, "TIME\tADDRESS\tKEY\tREQUEST\tSTATUS")
+		fmt.Fprintln(out, "TIME\tADDRESS\tKEY\tREQUEST\tSTATUS\tCODE\tN")
 		for _, e := range entries {
-			fmt.Fprintf(out, "%s\t%s\t%s\t%s %s\t%d\n", e.T.UTC().Format(time.DateTime), e.Address, e.KeyFP, e.Method,
-				e.Path, e.Status)
+			// %q: the path came from the client, and a terminal must not interpret it
+			fmt.Fprintf(out, "%s\t%s\t%s\t%s %q\t%d\t%s\t%d\n", e.T.UTC().Format(time.DateTime), e.Address, e.KeyFP,
+				e.Method, e.Path, e.Status, e.Code, e.N)
 		}
+	case "events":
+		f := flag.NewFlagSet("events", flag.ExitOnError)
+		n := f.Int("n", 50, "number of entries")
+		_ = f.Parse(args)
+		events, err := a.store.Events(*n)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintln(out, "TIME\tACTOR\tACTION\tSUBJECT\tDETAIL")
+		for _, e := range events {
+			fmt.Fprintf(out, "%s\t%s\t%s\t%s\t%q\n", e.T.UTC().Format(time.DateTime), e.Actor, e.Action, e.Subject,
+				e.Detail)
+		}
+	case "status":
+		f := flag.NewFlagSet("status", flag.ExitOnError)
+		prom := f.Bool("prom", false, "Prometheus text format, for a textfile collector")
+		_ = f.Parse(args)
+		return a.status(os.Stdout, *prom, now)
 	case "backup":
 		f := flag.NewFlagSet("backup", flag.ExitOnError)
 		keep := f.Int("keep", 0, "afterwards keep only the newest n backups in dir (0: all)")
@@ -427,6 +494,184 @@ func run(cfg config.Config, cmd string, args []string) error {
 			return err
 		}
 		return pruneBackups(dir, stamp, *keep)
+	}
+	return nil
+}
+
+// demoted counts the anchors that were no anchor in a combination, being far from the other anchors.
+func demoted(r *hub.Result) int {
+	ids := map[int64]bool{}
+	for _, u := range r.Used {
+		if u.Demoted {
+			ids[u.StationID] = true
+		}
+	}
+	return len(ids)
+}
+
+// warnAboutAnchors says at start what the operator may not notice otherwise: without an anchor nothing is
+// combined, and without an anchor that does not contribute nothing is published automatically.
+func (a *app) warnAboutAnchors() {
+	stations, err := a.store.Stations()
+	if err != nil {
+		a.log.Error("stations", "err", err)
+		return
+	}
+	anchors, voters := 0, 0
+	for _, st := range stations {
+		if st.Status == store.Active && st.TrustOperator && st.Trust >= a.cfg.Aggregation.NewcomerTrust {
+			anchors++
+			if st.Profiles == 0 {
+				voters++
+			}
+		}
+	}
+	switch {
+	case anchors == 0:
+		a.log.Warn("no anchor: nothing will be combined until the operator trusts a station (vinyl-mind trust <fp> 1)")
+	case voters == 0 && a.cfg.Publication.Auto:
+		a.log.Warn("every anchor contributes: no candidate can be published automatically until an anchor that does "+
+			"not contribute (and has its own account) checks and reports", "anchors", anchors)
+	default:
+		a.log.Info("anchors", "anchors", anchors, "not_contributing", voters)
+	}
+}
+
+// event records an operator's command in the event log next to the server's own events.
+func (a *app) event(now time.Time, action, subject, detail string) {
+	if err := a.store.AddEvent(store.Event{T: now, Actor: "cli", Action: action, Subject: subject,
+		Detail: detail}); err != nil {
+		fmt.Fprintln(os.Stderr, "vinyl-mind: event log:", err)
+	}
+}
+
+// status prints the counts an operator watches: as text, or in the Prometheus exposition format for a textfile
+// collector (`vinyl-mind status -prom > vinyl-mind.prom`). Nothing in it names an address or a key.
+func (a *app) status(w io.Writer, prom bool, now time.Time) error {
+	type metric struct {
+		name, help, labels string
+		value              float64
+	}
+	var ms []metric
+	add := func(name, help, labels string, value float64) {
+		ms = append(ms, metric{name, help, labels, value})
+	}
+	schema, _ := a.store.Meta("schema_version")
+	add("vinyl_mind_info", "Version of the server and schema of the database.",
+		fmt.Sprintf(`version=%q,schema=%q`, version, schema), 1)
+	stations, err := a.store.Stations()
+	if err != nil {
+		return err
+	}
+	byClass := map[string]int{}
+	for _, st := range stations {
+		class := "new"
+		switch {
+		case st.TrustOperator:
+			class = "operator"
+		case st.Trust >= 0.5:
+			class = "established"
+		}
+		byClass[st.Status+"|"+class]++
+	}
+	for _, status := range []string{store.Pending, store.Active, store.Revoked} {
+		for _, class := range []string{"operator", "established", "new"} {
+			add("vinyl_mind_stations", "Stations by status and trust class (operator: trust set by the operator).",
+				fmt.Sprintf(`status=%q,trust=%q`, status, class), float64(byClass[status+"|"+class]))
+		}
+	}
+	for _, table := range []string{"contributions", "nonces", "access_log", "events", "former_stations"} {
+		n, err := a.store.Count(table)
+		if err != nil {
+			return err
+		}
+		add("vinyl_mind_rows", "Rows per table (growth of nonces and access log).", fmt.Sprintf(`table=%q`, table),
+			float64(n))
+	}
+	models, err := a.store.Models(nil, "")
+	if err != nil {
+		return err
+	}
+	byStatus := map[string]int{}
+	for _, m := range models {
+		byStatus[m.Status]++
+	}
+	for _, status := range []string{store.Candidate, store.Published, store.Withdrawn} {
+		add("vinyl_mind_models", "Global models by status.", fmt.Sprintf(`status=%q`, status),
+			float64(byStatus[status]))
+	}
+	last, _ := a.store.Meta("last_combine_at")
+	lastAt, _ := strconv.ParseFloat(last, 64)
+	add("vinyl_mind_last_combine_timestamp_seconds", "When contributions were last combined (0: never).", "", lastAt)
+	joins, err := a.store.JoinsSince(now.Add(-24 * time.Hour))
+	if err != nil {
+		return err
+	}
+	add("vinyl_mind_joins_24h", "Stations that joined in the last 24 hours.", "", float64(joins))
+	refusals, err := a.store.Refusals(now.Add(-24 * time.Hour))
+	if err != nil {
+		return err
+	}
+	for _, k := range slices.Sorted(maps.Keys(refusals)) {
+		status, code, _ := strings.Cut(k, " ")
+		add("vinyl_mind_refusals_24h", "Requests refused in the last 24 hours by status and error code.",
+			fmt.Sprintf(`status=%q,code=%q`, status, code), float64(refusals[k]))
+	}
+	// The anchors: how many, how many could vote on something, how fresh their contributions are, and how many
+	// stations the last combination found far (anchors among them decide nothing until they are in line again)
+	anchors, voters, oldest, doubted := 0, 0, 0.0, 0
+	for _, st := range stations {
+		if st.Status == store.Active && st.FarAt != nil {
+			doubted++
+		}
+		if st.Status != store.Active || !st.TrustOperator || st.Trust < a.cfg.Aggregation.NewcomerTrust {
+			continue
+		}
+		anchors++
+		if st.Profiles == 0 {
+			voters++
+		} else if st.LastContrib != nil {
+			oldest = math.Max(oldest, now.Sub(*st.LastContrib).Seconds())
+		}
+	}
+	add("vinyl_mind_anchors", "Active stations the operator trusts at the full level.", "", float64(anchors))
+	add("vinyl_mind_anchors_not_contributing", "Anchors without contributions: the ones that can vote on any candidate.",
+		"", float64(voters))
+	add("vinyl_mind_anchor_contribution_age_seconds", "Age of the oldest anchor contribution.", "", oldest)
+	add("vinyl_mind_stations_doubted", "Active stations whose last combination found them far from the reference "+
+		"(far since, in vinyl-mind stations); anchors among them decide nothing.", "", float64(doubted))
+	// What the last combination found per group
+	var states []hub.GroupState
+	if raw, _ := a.store.Meta("last_combine"); raw != "" {
+		_ = json.Unmarshal([]byte(raw), &states)
+	}
+	byState := map[string]int{}
+	far := 0
+	for _, g := range states {
+		byState[g.State]++
+		far += g.Far
+	}
+	for _, state := range []string{"model", "no_anchor", "anchors_disagree", "no_voter", "too_few"} {
+		add("vinyl_mind_groups", "Groups by what the last combination found (no_voter: a model nobody can publish).",
+			fmt.Sprintf(`state=%q`, state), float64(byState[state]))
+	}
+	add("vinyl_mind_far_stations", "Stations far from the reference in the last combination (all groups).", "",
+		float64(far))
+	seen := map[string]bool{}
+	for _, m := range ms {
+		if prom {
+			if !seen[m.name] {
+				fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s gauge\n", m.name, m.help, m.name)
+				seen[m.name] = true
+			}
+			if m.labels != "" {
+				fmt.Fprintf(w, "%s{%s} %g\n", m.name, m.labels, m.value)
+			} else {
+				fmt.Fprintf(w, "%s %g\n", m.name, m.value)
+			}
+		} else {
+			fmt.Fprintf(w, "%s %s %g\n", m.name, m.labels, m.value)
+		}
 	}
 	return nil
 }
@@ -495,6 +740,7 @@ func (a *app) revokeInvitationStations(id int64, asJSON bool, now time.Time) err
 	if err := found(a.store.RevokeInvitation(id)); err != nil {
 		return err
 	}
+	a.event(now, "revoke-invitation", strconv.FormatInt(id, 10), "with its stations")
 	sts, err := a.store.Stations()
 	if err != nil {
 		return err
@@ -504,6 +750,7 @@ func (a *app) revokeInvitationStations(id int64, asJSON bool, now time.Time) err
 		if s.InvitationID == nil || *s.InvitationID != id || s.Status == store.Revoked {
 			continue
 		}
+		a.event(now, "revoke", s.KeyFP, fmt.Sprintf("invitation %d revoked", id))
 		if _, err := a.store.SetStatus(s.KeyFP, store.Revoked, now); err != nil {
 			return err
 		}
@@ -583,7 +830,11 @@ func (a *app) serve() error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	go a.background(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		a.background(ctx, srv)
+	}()
 	errc := make(chan error, 1)
 	go func() { errc <- hs.ListenAndServe() }()
 	a.log.Info("listening", "addr", a.cfg.Listen, "version", version, "database", a.store.Dialect(),
@@ -597,6 +848,11 @@ func (a *app) serve() error {
 	a.log.Info("admission", "join_mode", a.cfg.JoinMode, "clients", a.cfg.Clients.Allowed,
 		"detector_versions", a.cfg.Clients.DetectorVersions, "connect_url", a.cfg.Accounts.ConnectURL,
 		"binding_keys", bindingKeys)
+	p := a.cfg.Publication
+	a.log.Info("publication", "auto", p.Auto, "review_hours", p.ReviewHours, "min_reports", p.MinReports,
+		"min_report_stations", p.MinReportStations, "min_vote_age_days", p.MinVoteAgeDays,
+		"trust_auto_max", a.cfg.Aggregation.TrustAutoMax)
+	a.warnAboutAnchors()
 	select {
 	case err := <-errc:
 		return err
@@ -605,18 +861,32 @@ func (a *app) serve() error {
 	a.log.Info("shutting down")
 	sctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	return hs.Shutdown(sctx)
+	err := hs.Shutdown(sctx)
+	// A combination or review in progress finishes (every write is one transaction, but a half-done pass would
+	// be repeated for nothing), then the counted refusals go to the access log
+	select {
+	case <-done:
+	case <-sctx.Done():
+		a.log.Warn("background job did not finish in time")
+	}
+	srv.Flush()
+	return err
 }
 
-func (a *app) background(ctx context.Context) {
+func (a *app) background(ctx context.Context, srv *api.Server) {
 	combineEvery := time.Duration(a.cfg.Publication.CombineIntervalS) * time.Second
 	tick := time.NewTicker(10 * time.Minute)
 	defer tick.Stop()
 	lastCombine := time.Time{}
 	for {
 		now := time.Now()
+		srv.Flush()
 		if err := a.store.Prune(now, a.cfg.AccessLogDays); err != nil {
 			a.log.Error("prune", "err", err)
+		}
+		// A candidate that has reached the review age is decided here, not only when a report arrives
+		if err := a.hub.ReviewDue(now); err != nil {
+			a.log.Error("review", "err", err)
 		}
 		if combineEvery > 0 && now.Sub(lastCombine) >= combineEvery {
 			lastCombine = now

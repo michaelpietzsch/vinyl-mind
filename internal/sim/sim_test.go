@@ -30,10 +30,17 @@ func TestCombiningHelpsAndResistsAttackers(t *testing.T) {
 		}
 		local += r.ErrLocal
 		prior += r.ErrPrior
+		attackers := 0.0
 		for _, u := range r.Used {
-			if strings.HasPrefix(u.ProfileID, "attacker") && u.Share > 0.0625+1e-9 {
-				t.Errorf("seed %d: attacker share %.3f", seed, u.Share)
+			if strings.HasPrefix(u.ProfileID, "attacker") {
+				attackers += u.Share
+				if !u.Far {
+					t.Errorf("seed %d: attacker %s not far", seed, u.ProfileID)
+				}
 			}
+		}
+		if attackers > 0.2+1e-9 {
+			t.Errorf("seed %d: attackers together hold %.3f", seed, attackers)
 		}
 	}
 	if prior > 0.7*local {
@@ -47,6 +54,7 @@ func TestSharedScalingAbsorbsChainOffsets(t *testing.T) {
 	// standardises with its own mean and spread, and the conversion into the shared scaling undoes that exactly
 	p := Defaults()
 	p.Attackers, p.ChainShift = 0, 1.5
+	p.Anchors = p.Stations // every station the operator's: this is about the conversion, not about trust
 	r, err := Run(p)
 	if err != nil {
 		t.Fatal(err)

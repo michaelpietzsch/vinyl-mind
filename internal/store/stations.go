@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"errors"
+	"math"
 	"time"
 )
 
@@ -19,7 +20,16 @@ var (
 	ErrInvitationInvalid  = errors.New("invitation invalid")
 	ErrInvitationRequired = errors.New("invitation required")
 	ErrBindingRequired    = errors.New("binding required")
+	ErrJoinLimit          = errors.New("join limit reached")
 )
+
+// FormerDays is how long a station that left is remembered: a key or account that comes back within this time
+// starts with the trust it had, not with a clean slate.
+const FormerDays = 30
+
+// MaxReturnsPerDay is how often a key may come back after leaving within a day. Coming back is not a new station
+// (trust and age stay), so it does not count against JoinsPerDay; this keeps a key from churning instead.
+const MaxReturnsPerDay = 5
 
 // InvitationCheck decides, before an invitation is used up, whether this join may use it, and returns the account
 // the station is to belong to (empty for none). An error leaves the invitation untouched.
@@ -32,7 +42,10 @@ type Station struct {
 	PublicKey     string
 	Status        string
 	Trust         float64
-	TrustGainedAt *time.Time
+	TrustOperator bool       // the trust was set by the operator; it never changes automatically
+	TrustGainedAt *time.Time // last automatic gain
+	TrustPenalty  *time.Time // last automatic penalty
+	FarAt         *time.Time // the last combination that used the station found it far; nil: in line, or never used
 	InvitationID  *int64
 	JoinedAt      time.Time
 	ApprovedAt    *time.Time
@@ -101,7 +114,7 @@ func (s *Store) RevokeInvitation(id int64) (bool, error) {
 }
 
 const stationCols = `s.id, s.key_fp, s.public_key, s.status, s.trust, s.trust_gained_at, s.invitation_id,
-	s.joined_at, s.approved_at, s.last_seen_at,
+	s.joined_at, s.approved_at, s.last_seen_at, s.trust_operator, s.trust_penalized_at, s.far_at,
 	(SELECT COUNT(*) FROM contributions c WHERE c.station_id = s.id), s.account, s.contributions_total,
 	s.last_contribution_at,
 	(SELECT COALESCE(SUM(k.n_real + k.n_false), 0) FROM contribution_kinds k
@@ -112,15 +125,17 @@ type scanner interface{ Scan(...any) error }
 
 func scanStation(r scanner) (*Station, error) {
 	var st Station
-	var gained, approved, seen, inv sql.NullInt64
+	var gained, approved, seen, inv, penalized, farAt sql.NullInt64
 	var joined int64
 	var account sql.NullString
 	var lastContrib sql.NullInt64
 	if err := r.Scan(&st.ID, &st.KeyFP, &st.PublicKey, &st.Status, &st.Trust, &gained, &inv, &joined, &approved,
-		&seen, &st.Profiles, &account, &st.Contributions, &lastContrib, &st.Examples, &st.Reports); err != nil {
+		&seen, &st.TrustOperator, &penalized, &farAt, &st.Profiles, &account, &st.Contributions, &lastContrib,
+		&st.Examples, &st.Reports); err != nil {
 		return nil, err
 	}
-	st.Account, st.LastContrib = account.String, fromMS(lastContrib)
+	st.Account, st.LastContrib, st.TrustPenalty = account.String, fromMS(lastContrib), fromMS(penalized)
+	st.FarAt = fromMS(farAt)
 	st.TrustGainedAt, st.ApprovedAt, st.LastSeenAt = fromMS(gained), fromMS(approved), fromMS(seen)
 	st.JoinedAt = time.UnixMilli(joined)
 	if inv.Valid {
@@ -169,15 +184,26 @@ func (s *Store) Stations() ([]Station, error) {
 // can retry after a lost answer without using up an invitation.
 //
 // With a code, check (if not nil) runs before the code is used up; a code created as bound needs a check that
-// accepts it.
+// accepts it. maxPerDay (0: no limit) caps the stations that may join in 24 hours, counted inside the transaction
+// so that parallel joins cannot slip past it together. A key or account that left within FormerDays keeps the
+// trust it had, and the key its age, so that leaving and coming back resets nothing.
 func (s *Store) Join(fp, publicKey string, code *string, allowPending bool, trust float64, check InvitationCheck,
-	now time.Time) (*Station, error) {
+	maxPerDay int, now time.Time) (*Station, error) {
 	var out *Station
 	err := s.tx(func(tx *sql.Tx) error {
 		existing, err := s.station(tx, fp)
 		if err != nil || existing != nil {
 			out = existing
 			return err
+		}
+		if maxPerDay > 0 {
+			n, err := s.joinsSince(tx, now.Add(-24*time.Hour))
+			if err != nil {
+				return err
+			}
+			if n >= maxPerDay {
+				return ErrJoinLimit
+			}
 		}
 		status := Pending
 		var invID, accountVal any
@@ -220,15 +246,60 @@ func (s *Store) Join(fp, publicKey string, code *string, allowPending bool, trus
 		if status == Active {
 			approved = ms(now)
 		}
+		joined := ms(now)
+		// What a key or account left with, it comes back with
+		var formerTrust float64
+		var formerJoined, returns int64
+		var returnsSince sql.NullInt64
+		err = tx.QueryRow(s.q("SELECT trust, joined_at, returns, returns_since FROM former_stations WHERE key_fp = ?"),
+			fp).Scan(&formerTrust, &formerJoined, &returns, &returnsSince)
+		if err == nil {
+			trust, joined = math.Min(trust, formerTrust), formerJoined
+			if !returnsSince.Valid || now.Sub(time.UnixMilli(returnsSince.Int64)) >= 24*time.Hour {
+				returns, returnsSince = 0, sql.NullInt64{Int64: ms(now), Valid: true}
+			}
+			returns++
+			if returns > MaxReturnsPerDay {
+				return ErrJoinLimit
+			}
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		if account, ok := accountVal.(string); ok {
+			var lowest sql.NullFloat64
+			if err := tx.QueryRow(s.q("SELECT MIN(trust) FROM former_stations WHERE account = ?"), account).Scan(
+				&lowest); err != nil {
+				return err
+			}
+			if lowest.Valid {
+				trust = math.Min(trust, lowest.Float64)
+			}
+		}
 		if _, err := tx.Exec(s.q(`INSERT INTO stations (key_fp, public_key, status, trust, invitation_id, joined_at,
-			approved_at, account) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`), fp, publicKey, status, trust, invID, ms(now),
-			approved, accountVal); err != nil {
+			approved_at, account, returns, returns_since) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`), fp, publicKey,
+			status, trust, invID, joined, approved, accountVal, returns, returnsSince); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(s.q("DELETE FROM former_stations WHERE key_fp = ?"), fp); err != nil {
 			return err
 		}
 		out, err = s.station(tx, fp)
 		return err
 	})
 	return out, err
+}
+
+// joinsSince counts the stations that joined since t, including those that have left since.
+func (s *Store) joinsSince(q querier, t time.Time) (int, error) {
+	var n, former int
+	if err := q.QueryRow(s.q("SELECT COUNT(*) FROM stations WHERE joined_at >= ?"), ms(t)).Scan(&n); err != nil {
+		return 0, err
+	}
+	if err := q.QueryRow(s.q("SELECT COUNT(*) FROM former_stations WHERE joined_at >= ?"), ms(t)).Scan(
+		&former); err != nil {
+		return 0, err
+	}
+	return n + former, nil
 }
 
 // RevokeAccount revokes every station of an account and deletes what they sent, and returns their fingerprints.
@@ -258,12 +329,8 @@ func (s *Store) RevokeAccount(account string, now time.Time) ([]string, error) {
 	return fps, nil
 }
 
-// JoinsSince counts the stations that joined since t.
-func (s *Store) JoinsSince(t time.Time) (int, error) {
-	var n int
-	err := s.db.QueryRow(s.q("SELECT COUNT(*) FROM stations WHERE joined_at >= ?"), ms(t)).Scan(&n)
-	return n, err
-}
+// JoinsSince counts the stations that joined since t, including those that have left since.
+func (s *Store) JoinsSince(t time.Time) (int, error) { return s.joinsSince(s.db, t) }
 
 // SetStatus approves or revokes a station. Revoking also deletes its contributions and reports, as leaving does;
 // the row stays so that the key cannot join again.
@@ -293,10 +360,28 @@ func (s *Store) SetStatus(fp, status string, now time.Time) (bool, error) {
 	return found, err
 }
 
-// Leave deletes a station with everything it sent (the cascades take contributions and reports).
-func (s *Store) Leave(st *Station) error {
+// Leave deletes a station with everything it sent (the cascades take contributions and reports). Key, account,
+// trust and age stay in former_stations for FormerDays, for a station that comes back.
+func (s *Store) Leave(st *Station, now time.Time) error {
 	return s.tx(func(tx *sql.Tx) error {
 		if _, err := tx.Exec(s.q("DELETE FROM nonces WHERE key_fp = ?"), st.KeyFP); err != nil {
+			return err
+		}
+		var account any
+		if st.Account != "" {
+			account = st.Account
+		}
+		var returns int64
+		var returnsSince sql.NullInt64
+		if err := tx.QueryRow(s.q("SELECT returns, returns_since FROM stations WHERE id = ?"), st.ID).Scan(&returns,
+			&returnsSince); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(s.q(`INSERT INTO former_stations (key_fp, account, trust, joined_at, left_at, returns,
+			returns_since) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (key_fp) DO UPDATE SET account = excluded.account,
+			trust = excluded.trust, joined_at = excluded.joined_at, left_at = excluded.left_at,
+			returns = excluded.returns, returns_since = excluded.returns_since`), st.KeyFP, account, st.Trust,
+			ms(st.JoinedAt), ms(now), returns, returnsSince); err != nil {
 			return err
 		}
 		_, err := tx.Exec(s.q("DELETE FROM stations WHERE id = ?"), st.ID)
@@ -310,14 +395,37 @@ func (s *Store) Touch(id int64, now time.Time) error {
 	return err
 }
 
-// SetTrust stores a station's trust; gainedAt is set when the trust grew, to limit growth to once per day.
-func (s *Store) SetTrust(id int64, trust float64, gainedAt *time.Time) error {
-	if gainedAt != nil {
-		_, err := s.db.Exec(s.q("UPDATE stations SET trust = ?, trust_gained_at = ? WHERE id = ?"), trust,
-			ms(*gainedAt), id)
-		return err
+// SetTrust stores an automatic gain; gainedAt limits growth to once per day.
+func (s *Store) SetTrust(id int64, trust float64, gainedAt time.Time) error {
+	_, err := s.db.Exec(s.q("UPDATE stations SET trust = ?, trust_gained_at = ? WHERE id = ?"), trust,
+		ms(gainedAt), id)
+	return err
+}
+
+// PenalizeTrust stores an automatic penalty; penalizedAt limits penalties to once per day.
+func (s *Store) PenalizeTrust(id int64, trust float64, penalizedAt time.Time) error {
+	_, err := s.db.Exec(s.q("UPDATE stations SET trust = ?, trust_penalized_at = ? WHERE id = ?"), trust,
+		ms(penalizedAt), id)
+	return err
+}
+
+// SetFar records whether the last combination that used the station found it far from the reference (at nil:
+// in line). For an anchor this is the doubt about its word: a doubted anchor decides nothing about models.
+func (s *Store) SetFar(id int64, at *time.Time) error {
+	var v any
+	if at != nil {
+		v = ms(*at)
 	}
-	_, err := s.db.Exec(s.q("UPDATE stations SET trust = ? WHERE id = ?"), trust, id)
+	_, err := s.db.Exec(s.q("UPDATE stations SET far_at = ? WHERE id = ?"), v, id)
+	return err
+}
+
+// SetOperatorTrust stores the operator's decision, and lifts the doubt about the station (far_at): the operator
+// has looked at it. With operator true the trust is the operator's and never
+// changes automatically; false hands the station back to the automatic trust at the given value.
+func (s *Store) SetOperatorTrust(id int64, trust float64, operator bool) error {
+	_, err := s.db.Exec(s.q("UPDATE stations SET trust = ?, trust_operator = ?, far_at = NULL WHERE id = ?"), trust,
+		boolInt(operator), id)
 	return err
 }
 

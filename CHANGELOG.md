@@ -3,6 +3,62 @@
 Versions of the server. The specification has its own versions (feature versions in `spec/`); a server release
 names the feature versions it accepts.
 
+## 0.1.8 – unreleased
+
+The findings of the security review of 26 October 2026 (hub protocol and aggregation), schema 4.
+
+- **Anchors.** The reference for everything is the stations the operator trusts (`vinyl-mind trust … 1`):
+  without one there is no model, their coefficients define a band every other contribution is pulled into before
+  it is combined, only they decide about publication, and their trust never changes automatically. Automatic
+  trust stops at `trust_auto_max` (0.9). All other stations share `newcomer_share` in equal parts, whatever they
+  claim; a station's claimed examples are capped across its profiles. A weight no anchor learned stays the prior.
+- **Far** is now two or more learned coefficients outside the band; the penalty falls at most once a day and only
+  for a changed contribution; gains stop below the full level and, from reports, go to contributing stations only.
+- **Candidates and publication.** A candidate is under review for `review_hours` (48): not replaced, not published
+  before; a new combination within 0.02 of it keeps it. The hash that decides whether anything changed is over the
+  result, not over row ids. Contributors and stations of their accounts cannot vote for their own candidate. A
+  withdrawal does not bring an older model back. Every model entry carries a signed status (`state_jws`).
+  Candidates past the review age are decided by the background job.
+- **Protocol.** The nonce is checked before the station's rate limit (a replay costs the station nothing); address
+  limits count IPv6 per /64; `joins_per_day` is counted inside the join; a station that left comes back with its
+  trust and age (30 days); public keys of small order are refused; only plain `application/json` is read (415);
+  a malformed `X-Forwarded-For` is refused (400); the access log keeps the path as sent, with the error code,
+  counts refused requests of unknown senders per address instead of listing them, and is capped; nonces are kept
+  a day beyond their expiry.
+- **Operator.** `vinyl-mind events` (the event log: joins, departures, trust changes, publications, group states,
+  commands; kept a year), `vinyl-mind status [-prom]` (counts for a textfile collector, with the anchors and the
+  state of every group), `trust <fp> auto`, the publication settings and a warning about missing anchors in the
+  startup log. Bindings may name the hub (`aud`), checked against `[accounts] audience`; `audience_required`
+  refuses bindings that do not, once every account service names the hub. `backup` never migrates the database.
+- **After the second review round.** Two anchors are a reference only while they agree; an anchor is held to the
+  others alone only once three others learned the coefficient, and one that is far from the other anchors is no
+  anchor in that combination (one bad anchor among two or three cannot pull the good ones, nor define a
+  coefficient only it learned). A group that cannot be served (no anchor, anchors disagree, nobody can publish)
+  is reported once per change. The migration makes anchors only of stations whose full trust the operator set. A
+  key may return five times a day. Requests without a verified key are all counted (per address, IPv6 per /64),
+  written in one
+  transaction off the request path. The signed status carries a `seq` that counts status changes.
+- **After the third and fourth review rounds.** A coefficient has a reference only where more than half of all
+  anchors stand behind one position (within the band of their median; two anchors: within √2 bands of each
+  other). A minority defines nothing, be it two with a second opinion among many, colluders among the few that
+  learned a coefficient, or one of two equal camps: the coefficient is kept at the published model or the prior,
+  nobody is held or far on it, and the operator is told. An anchor is demoted on the coefficients every anchor
+  learned, and never when the far anchors are half of all anchors or more. An anchor that the last combination
+  found far (`anchor_demoted`, `anchor_far`; recorded in the database) decides nothing about publication until a
+  combination finds it in line again. Each state of a group is reported at most once a day, a state that is not a
+  model once a day as long as it lasts. `backup` refuses a missing database instead of creating one; the
+  background job finishes its step before the process ends; a stored self-check error that is not a number
+  excludes the contribution.
+- **After the fifth review round.** The majority behind a coefficient is always one of all anchors, also in the
+  view of an anchor that is held to the others (a minority just beyond the band could otherwise pass for the
+  majority in every honest anchor's view); the position is the largest group of anchors within the band, not the
+  surroundings of their median, which a minority just short of half skews; and an anchor behind the majority
+  position is never far on it. `vinyl-mind trust` lifts the doubt about a station; `stations` shows
+  since when a station is in doubt, `status` counts them. The scenario tests of the review are in the repository,
+  with bounds, and the CI runs them: the anchor matrix, colluders at tuned offsets, the availability under honest
+  heterogeneity, and the simulation sweeps with and without a second opinion.
+- Documentation: the public hub the author runs, and that vinyl-check 1.1.0 implements the station side.
+
 ## 0.1.7 – 2026-10-25
 
 - Features that never vary: a contribution says per kind which features were `informative` (optional, one boolean

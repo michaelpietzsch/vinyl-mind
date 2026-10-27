@@ -45,7 +45,7 @@ func (s *Server) admin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "no such endpoint")
 		return
 	}
-	addr := info(r).addr.String()
+	addr := limitKey(info(r).addr)
 	if !s.authorized(r) {
 		// Ten wrong tokens per address in ten minutes, then nothing more is checked from there for a while
 		if !s.adminFails.Allow(addr, s.now()) {

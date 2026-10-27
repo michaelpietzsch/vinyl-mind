@@ -38,7 +38,7 @@ func fuzzServer(f *testing.F) (*Server, *store.Store, ed25519.PrivateKey, time.T
 	code := "fuzz-invitation"
 	_, _ = st.AddInvitation(code, 1, nil, false, now)
 	_, _ = st.Join(keys.Fingerprint(station.Public().(ed25519.PublicKey)),
-		keys.Encode(station.Public().(ed25519.PublicKey)), &code, false, 0.25, nil, now)
+		keys.Encode(station.Public().(ed25519.PublicKey)), &code, false, 0.25, nil, 0, now)
 	return srv, st, station, now
 }
 

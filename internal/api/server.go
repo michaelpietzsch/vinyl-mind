@@ -7,13 +7,17 @@ import (
 	"crypto/ed25519"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"mime"
 	"net"
 	"net/http"
 	"net/netip"
 	"regexp"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/michaelpietzsch/vinyl-mind/internal/auth"
@@ -39,7 +43,20 @@ type Server struct {
 	perAddress *ratelimit.Limiter
 	joins      *ratelimit.Limiter
 	adminFails *ratelimit.Limiter
+
+	// Refused requests of unknown senders are counted here and written to the access log in one line per
+	// address and answer (Flush), so that a flood of them costs memory bounded by maxRefused, not disk
+	refusedMu sync.Mutex
+	refused   map[string]*refused
+	writes    sync.WaitGroup // writes of full counters started off the request path; Flush waits for them
 }
+
+type refused struct {
+	entry store.AccessEntry
+	n     int
+}
+
+const maxRefused = 10_000
 
 // New returns the server. now may be nil (the wall clock); tests pass their own.
 func New(cfg config.Config, st *store.Store, key ed25519.PrivateKey, h *hub.Hub, version string,
@@ -57,6 +74,7 @@ func New(cfg config.Config, st *store.Store, key ed25519.PrivateKey, h *hub.Hub,
 		perAddress: ratelimit.New(cfg.AddressRequestsPerMin, time.Minute),
 		joins:      ratelimit.New(cfg.JoinsPerHour, time.Hour),
 		adminFails: ratelimit.New(10, 10*time.Minute),
+		refused:    map[string]*refused{},
 	}
 }
 
@@ -108,6 +126,15 @@ type reqInfo struct {
 	keyFP string
 }
 
+// limitKey is what the address limits count on: the address, or for IPv6 its /64, since one subscriber has a
+// whole /64 and could otherwise start afresh with every address.
+func limitKey(a netip.Addr) string {
+	if a.Is6() && !a.Is4In6() {
+		return netip.PrefixFrom(a, 64).Masked().String()
+	}
+	return a.String()
+}
+
 func info(r *http.Request) *reqInfo {
 	if ri, ok := r.Context().Value(ctxKey{}).(*reqInfo); ok {
 		return ri
@@ -118,6 +145,7 @@ func info(r *http.Request) *reqInfo {
 type statusWriter struct {
 	http.ResponseWriter
 	status int
+	code   string // the error code of the answer, for the access log
 }
 
 func (w *statusWriter) WriteHeader(code int) {
@@ -136,27 +164,94 @@ func (w *statusWriter) Write(b []byte) (int, error) {
 
 func (s *Server) accessLog(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ri := &reqInfo{addr: s.clientAddr(r)}
+		addr, err := s.clientAddr(r)
+		if err != nil {
+			// A forwarded entry that is no address: refusing is safer than guessing who sent the request
+			writeError(w, http.StatusBadRequest, "bad_forwarded", "X-Forwarded-For is malformed")
+			return
+		}
+		ri := &reqInfo{addr: addr}
 		sw := &statusWriter{ResponseWriter: w}
 		next.ServeHTTP(sw, r.WithContext(context.WithValue(r.Context(), ctxKey{}, ri)))
 		if r.URL.Path == "/healthz" {
 			return // the proxy's health checks would drown everything else
 		}
-		addr := ""
+		address := ""
 		if ri.addr.IsValid() {
-			addr = ri.addr.String()
+			address = ri.addr.String()
 		}
-		// The query is left out: it says nothing about abuse and only adds data
-		if err := s.store.LogAccess(store.AccessEntry{T: s.now(), Address: addr, KeyFP: ri.keyFP, Method: r.Method,
-			Path: r.URL.Path, Status: sw.status}); err != nil {
+		// The query is left out: it says nothing about abuse and only adds data. The path is kept as it came
+		// over the wire, so that no byte in it can pretend to be another line in a terminal. Requests without a
+		// verified key are counted, not listed: nobody without a key can make the server write a line.
+		e := store.AccessEntry{T: s.now(), Address: address, KeyFP: ri.keyFP, Method: r.Method,
+			Path: r.URL.EscapedPath(), Status: sw.status, Code: sw.code}
+		if ri.keyFP == "" {
+			s.countRefused(e, limitKey(ri.addr))
+			return
+		}
+		if err := s.store.LogAccess(e); err != nil {
 			s.log.Error("access log", "err", err)
 		}
 	})
 }
 
+// countRefused remembers a request of an unknown sender; Flush writes the counts, one line per address (an
+// IPv6 /64 counts as one) and answer. When the table is full, it is handed to a writer in the background: no
+// request waits for the database because of it.
+func (s *Server) countRefused(e store.AccessEntry, key string) {
+	s.refusedMu.Lock()
+	defer s.refusedMu.Unlock()
+	k := key + "|" + strconv.Itoa(e.Status) + "|" + e.Code
+	c := s.refused[k]
+	if c == nil {
+		if len(s.refused) >= maxRefused {
+			entries := s.takeLocked()
+			s.writes.Add(1)
+			go func() {
+				defer s.writes.Done()
+				s.write(entries)
+			}()
+		}
+		e.Address, e.Method, e.Path = key, "*", "*"
+		c = &refused{entry: e}
+		s.refused[k] = c
+	}
+	c.n++
+}
+
+// Flush writes the counts of requests without a verified key to the access log. The server calls it regularly
+// and when it shuts down.
+func (s *Server) Flush() {
+	s.refusedMu.Lock()
+	entries := s.takeLocked()
+	s.refusedMu.Unlock()
+	s.write(entries)
+	s.writes.Wait()
+}
+
+func (s *Server) takeLocked() []store.AccessEntry {
+	entries := make([]store.AccessEntry, 0, len(s.refused))
+	for k, c := range s.refused {
+		e := c.entry
+		e.N = c.n
+		entries = append(entries, e)
+		delete(s.refused, k)
+	}
+	return entries
+}
+
+func (s *Server) write(entries []store.AccessEntry) {
+	if len(entries) == 0 {
+		return
+	}
+	if err := s.store.LogAccesses(entries); err != nil {
+		s.log.Error("access log", "err", err)
+	}
+}
+
 func (s *Server) limitAddress(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/healthz" && !s.perAddress.Allow(info(r).addr.String(), s.now()) {
+		if r.URL.Path != "/healthz" && !s.perAddress.Allow(limitKey(info(r).addr), s.now()) {
 			w.Header().Set("Retry-After", "60")
 			writeError(w, http.StatusTooManyRequests, "rate_limited", "too many requests from this address")
 			return
@@ -166,31 +261,36 @@ func (s *Server) limitAddress(next http.Handler) http.Handler {
 }
 
 // clientAddr is the peer address, or the client address a trusted reverse proxy reports: the rightmost entry of
-// X-Forwarded-For that is not itself a trusted proxy. Entries further left could be written by the client.
-func (s *Server) clientAddr(r *http.Request) netip.Addr {
+// X-Forwarded-For that is not itself a trusted proxy. Entries further left could be written by the client. An
+// entry that is no address at all is an error: the request is refused rather than counted on the proxy.
+func (s *Server) clientAddr(r *http.Request) (netip.Addr, error) {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		host = r.RemoteAddr
 	}
 	peer, err := netip.ParseAddr(host)
 	if err != nil {
-		return netip.Addr{}
+		return netip.Addr{}, nil
 	}
 	peer = peer.Unmap()
 	if !s.cfg.TrustedProxy(peer) {
-		return peer
+		return peer, nil
 	}
-	hops := strings.Split(strings.Join(r.Header.Values("X-Forwarded-For"), ","), ",")
+	forwarded := strings.Join(r.Header.Values("X-Forwarded-For"), ",")
+	if strings.TrimSpace(forwarded) == "" {
+		return peer, nil // the proxy's own request, such as a health check
+	}
+	hops := strings.Split(forwarded, ",")
 	for i := len(hops) - 1; i >= 0; i-- {
 		a, err := netip.ParseAddr(strings.TrimSpace(hops[i]))
 		if err != nil {
-			break
+			return netip.Addr{}, fmt.Errorf("x-forwarded-for: %q is not an address", hops[i])
 		}
 		if a = a.Unmap(); !s.cfg.TrustedProxy(a) {
-			return a
+			return a, nil
 		}
 	}
-	return peer
+	return peer, nil
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -201,6 +301,9 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 }
 
 func writeError(w http.ResponseWriter, status int, code, msg string) {
+	if sw, ok := w.(*statusWriter); ok {
+		sw.code = code
+	}
 	writeJSON(w, status, map[string]string{"error": code, "message": msg})
 }
 
@@ -213,9 +316,23 @@ func (s *Server) internal(w http.ResponseWriter, err error) {
 func readBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
 	// A body must announce its length: an oversized one is then refused before it is read, also when the request
 	// did not come through a proxy that checks it. Every client sends small documents of known length.
-	if r.ContentLength < 0 && (r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodPatch) {
-		writeError(w, http.StatusLengthRequired, "length_required", "a body needs a Content-Length")
-		return nil, false
+	if r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodPatch {
+		if r.ContentLength < 0 {
+			writeError(w, http.StatusLengthRequired, "length_required", "a body needs a Content-Length")
+			return nil, false
+		}
+		// Only plain JSON is read: what the signature covers is what is parsed, without any transformation
+		if ct := r.Header.Get("Content-Type"); ct != "" {
+			if mt, _, err := mime.ParseMediaType(ct); err != nil || mt != "application/json" {
+				writeError(w, http.StatusUnsupportedMediaType, "unsupported_media_type",
+					"the body must be application/json")
+				return nil, false
+			}
+		}
+		if ce := r.Header.Get("Content-Encoding"); ce != "" && ce != "identity" {
+			writeError(w, http.StatusUnsupportedMediaType, "unsupported_media_type", "the body must not be encoded")
+			return nil, false
+		}
 	}
 	if r.ContentLength > spec.MaxBody {
 		writeError(w, http.StatusRequestEntityTooLarge, "too_large", "body larger than the server accepts")
@@ -260,23 +377,27 @@ func (s *Server) signed(h stationHandler, allowPending bool) http.Handler {
 			return
 		}
 		if err := sig.Verify(st.PublicKey, s.fp, r.Method, r.RequestURI, body); err != nil {
+			s.log.Warn("signature refused", "station", st.KeyFP, "address", info(r).addr, "err", err)
 			authError(w, err)
 			return
 		}
 		info(r).keyFP = st.KeyFP
-		if !s.perStation.Allow(st.KeyFP, now) {
-			w.Header().Set("Retry-After", "60")
-			writeError(w, http.StatusTooManyRequests, "rate_limited", "too many requests from this station")
-			return
-		}
-		// Kept until the timestamp is stale anyway; after that the age check refuses a replay
+		// The nonce comes before the station's rate limit: a replayed request (which only its first sender could
+		// have made) must not use up the station's own quota. Kept until the timestamp is stale anyway; after
+		// that the age check refuses a replay.
 		fresh, err := s.store.UseNonce(st.KeyFP, sig.Nonce, sig.Time.Add(s.cfg.ClockSkew()+time.Minute))
 		if err != nil {
 			s.internal(w, err)
 			return
 		}
 		if !fresh {
+			s.log.Warn("replay refused", "station", st.KeyFP, "address", info(r).addr)
 			writeError(w, http.StatusUnauthorized, "replayed", "nonce already used")
+			return
+		}
+		if !s.perStation.Allow(st.KeyFP, now) {
+			w.Header().Set("Retry-After", "60")
+			writeError(w, http.StatusTooManyRequests, "rate_limited", "too many requests from this station")
 			return
 		}
 		switch {

@@ -29,7 +29,7 @@ func setup(t *testing.T) (ed25519.PrivateKey, map[string]ed25519.PublicKey) {
 func TestVerify(t *testing.T) {
 	priv, accepted := setup(t)
 	tok, _ := Sign(priv, valid())
-	p, err := Verify(tok, accepted, now, 5*time.Minute)
+	p, err := Verify(tok, accepted, Audience{}, now, 5*time.Minute)
 	if err != nil || p.InvitationID != 7 || p.Account != "AAAAAAAAAAAAAAAAAAAAAA" {
 		t.Fatalf("valid binding: %+v %v", p, err)
 	}
@@ -56,9 +56,30 @@ func TestVerify(t *testing.T) {
 		"garbage":              "%%%.@@@.***",
 	}
 	for name, tok := range cases {
-		if _, err := Verify(tok, accepted, now, 5*time.Minute); !errors.Is(err, ErrInvalid) {
+		if _, err := Verify(tok, accepted, Audience{}, now, 5*time.Minute); !errors.Is(err, ErrInvalid) {
 			t.Errorf("%s: want ErrInvalid, got %v", name, err)
 		}
+	}
+	// The audience: a binding that names a hub is good for that hub only; one that names none is good as before
+	forThis := signP(t, priv, func(p *Payload) { p.Aud = "https://hub.example.org" })
+	if _, err := Verify(forThis, accepted, Audience{URL: "https://hub.example.org"}, now, 5*time.Minute); err != nil {
+		t.Fatalf("own audience: %v", err)
+	}
+	if _, err := Verify(forThis, accepted, Audience{URL: "https://other.example.org"}, now, 5*time.Minute); !errors.Is(err, ErrInvalid) {
+		t.Fatal("another hub's binding must be refused")
+	}
+	if _, err := Verify(forThis, accepted, Audience{}, now, 5*time.Minute); !errors.Is(err, ErrInvalid) {
+		t.Fatal("a binding with an audience needs a hub that knows its own")
+	}
+	if _, err := Verify(tok, accepted, Audience{URL: "https://hub.example.org"}, now, 5*time.Minute); err != nil {
+		t.Fatalf("no audience in the binding, as before: %v", err)
+	}
+	required := Audience{URL: "https://hub.example.org", Required: true}
+	if _, err := Verify(tok, accepted, required, now, 5*time.Minute); !errors.Is(err, ErrInvalid) {
+		t.Fatal("once required, a binding without an audience is refused")
+	}
+	if _, err := Verify(forThis, accepted, required, now, 5*time.Minute); err != nil {
+		t.Fatalf("required and named: %v", err)
 	}
 }
 
@@ -94,7 +115,7 @@ func FuzzVerify(f *testing.F) {
 	f.Add("a.b.c")
 	f.Add("")
 	f.Fuzz(func(t *testing.T, s string) {
-		p, err := Verify(s, accepted, now, 5*time.Minute)
+		p, err := Verify(s, accepted, Audience{}, now, 5*time.Minute)
 		if err == nil && s != tok {
 			// Ed25519 signatures are not malleable here, so only the original token may pass
 			t.Fatalf("accepted a token that was not signed: %q → %+v", s, p)

@@ -22,6 +22,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0 # the whole history, for the secrets scan
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
@@ -34,7 +35,9 @@ jobs:
       - name: go.mod and go.sum are tidy
         run: go mod tidy -diff
       - name: Known vulnerabilities
-        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+      - name: Secrets in the history
+        run: go run github.com/zricethezav/gitleaks/v8@v8.30.1 git --no-banner --redact .
 
   test:
     name: Tests (${{ matrix.os }})
@@ -53,10 +56,10 @@ jobs:
           go-version-file: go.mod
       - name: Tests with the race detector
         if: runner.os == 'Linux'
-        run: go test -race -count=1 -coverprofile=coverage.out ./...
+        run: go test -race -short -count=1 -coverprofile=coverage.out ./...
       - name: Tests
         if: runner.os != 'Linux'
-        run: go test -count=1 ./...
+        run: go test -short -count=1 ./...
       - name: Coverage
         if: runner.os == 'Linux'
         run: |
@@ -93,6 +96,31 @@ jobs:
           go test -count=1 -v ./internal/store/ | tee store.log
           # The PostgreSQL runs are skipped silently without the database; make sure they really ran
           grep -q -- '--- PASS: .*/postgres' store.log
+
+  bounds:
+    name: Aggregation bounds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      # The scenario tests of the security review: every count of anchors and turned anchors, colluders at tuned
+      # offsets, honest heterogeneity, and the simulation over seeds, each held to a bound (docs/aggregation.md)
+      - name: Anchor matrix, colluders, availability, simulation sweeps
+        run: |
+          tests='TestAnchorMatrix|TestTunedOffsetColluders|TestMajorityAvailability'
+          tests="$tests|TestMinorityColludersOnASecondOpinion|TestSimulationSeeds"
+          tests="$tests|TestTurnedAnchorsSweep|TestPriorFeedback"
+          go test -count=1 -v -run "$tests" ./internal/hub/ ./internal/sim/ | tee bounds.log
+          {
+            echo '### Aggregation bounds'
+            echo '```'
+            grep -E '^\s+[a-z_]+_test.go:[0-9]+: ' bounds.log | sed -E 's/^\s+[a-z_]+_test.go:[0-9]+: //'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
   simulate:
     name: Simulation
@@ -141,7 +169,7 @@ jobs:
   container:
     name: Container image
     runs-on: ubuntu-latest
-    needs: [lint, test, postgres]
+    needs: [lint, test, postgres, bounds]
     permissions:
       contents: read
       packages: write   # push to the GitHub Container Registry with the workflow's own token

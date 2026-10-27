@@ -23,7 +23,7 @@ every station checking a model on its own recordings before using it ([security.
 
 | | Measure | Effect | Status |
 |---|---|---|---|
-| 1 | Invitations only for people who use the official builds; one code per station; revoke on misuse | the strongest barrier: admission by a person, not by software | by the operator; planned: accounts on the vinyl-check website that hand out one code each after e-mail confirmation, revoked together with the account (`revoke-invitation-stations`) |
+| 1 | Invitations only for people who use the official builds; one code per station; revoke on misuse | the strongest barrier: admission by a person, not by software | **implemented**: on the public hub an account on vinylcheck.net hands out one code per connected station, bound to the station's key ([connect.md](connect.md)); a closed account takes its stations with it (`revoke-account`); invitation codes by hand remain for self-hosted hubs |
 | 2 | Accept only known client and detector versions (`[clients]` in the configuration) | keeps out versions the hub cannot combine, and versions that must no longer contribute | **implemented** |
 | 3 | A release key built into each official release, signing the join request; the server accepts known release keys only | keeps out casual scripts and self-built clients; does not stop someone who extracts the key | open decision |
 | 4 | Signed downloads: code signing on Windows and macOS, signed packages for the Raspberry Pi, published checksums | protects users from tampered downloads (not the server) | part of vinyl-check's release process |

@@ -86,35 +86,35 @@ func TestJoinAndInvitations(t *testing.T) {
 			t.Fatal(err)
 		}
 		code := "code-one"
-		st, err := s.Join("fp-a", "pk-a", &code, true, 0.25, nil, t0)
+		st, err := s.Join("fp-a", "pk-a", &code, true, 0.25, nil, 0, t0)
 		if err != nil || st.Status != Active || st.ApprovedAt == nil || st.Trust != 0.25 {
 			t.Fatalf("join with code: %+v %v", st, err)
 		}
-		again, err := s.Join("fp-a", "pk-a", &code, true, 0.25, nil, t0)
+		again, err := s.Join("fp-a", "pk-a", &code, true, 0.25, nil, 0, t0)
 		if err != nil || again.ID != st.ID {
 			t.Fatalf("joining again must return the same station: %+v %v", again, err)
 		}
-		if _, err := s.Join("fp-b", "pk-b", &code, true, 0.25, nil, t0); !errors.Is(err, ErrInvitationInvalid) {
+		if _, err := s.Join("fp-b", "pk-b", &code, true, 0.25, nil, 0, t0); !errors.Is(err, ErrInvitationInvalid) {
 			t.Fatalf("used-up code: %v", err)
 		}
 		other := "code-two"
 		if _, err := s.AddInvitation(other, 5, &exp, false, t0); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := s.Join("fp-c", "pk-c", &other, true, 0.25, nil, t0.Add(2*time.Hour)); !errors.Is(err, ErrInvitationInvalid) {
+		if _, err := s.Join("fp-c", "pk-c", &other, true, 0.25, nil, 0, t0.Add(2*time.Hour)); !errors.Is(err, ErrInvitationInvalid) {
 			t.Fatalf("expired code: %v", err)
 		}
 		invs, _ := s.Invitations()
 		if _, err := s.RevokeInvitation(invs[0].ID); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := s.Join("fp-c", "pk-c", &other, true, 0.25, nil, t0); !errors.Is(err, ErrInvitationInvalid) {
+		if _, err := s.Join("fp-c", "pk-c", &other, true, 0.25, nil, 0, t0); !errors.Is(err, ErrInvitationInvalid) {
 			t.Fatalf("revoked code: %v", err)
 		}
-		if _, err := s.Join("fp-d", "pk-d", nil, false, 0.25, nil, t0); !errors.Is(err, ErrInvitationRequired) {
+		if _, err := s.Join("fp-d", "pk-d", nil, false, 0.25, nil, 0, t0); !errors.Is(err, ErrInvitationRequired) {
 			t.Fatalf("no code where one is required: %v", err)
 		}
-		p, err := s.Join("fp-d", "pk-d", nil, true, 0.25, nil, t0)
+		p, err := s.Join("fp-d", "pk-d", nil, true, 0.25, nil, 0, t0)
 		if err != nil || p.Status != Pending || p.ApprovedAt != nil {
 			t.Fatalf("pending: %+v %v", p, err)
 		}
@@ -134,7 +134,7 @@ func TestContributionsReplaceAndCascade(t *testing.T) {
 	eachDB(t, func(t *testing.T, s *Store) {
 		code := "c"
 		_, _ = s.AddInvitation(code, 10, nil, false, t0)
-		a, _ := s.Join("fp-a", "pk-a", &code, true, 0.25, nil, t0)
+		a, _ := s.Join("fp-a", "pk-a", &code, true, 0.25, nil, 0, t0)
 		c := contribution(t)
 		changed, err := s.PutContribution(a.ID, "profile-aaaaaaaaaaaa", c, 2, t0)
 		if err != nil || !changed {
@@ -186,9 +186,9 @@ func TestContributionsReplaceAndCascade(t *testing.T) {
 		if all, _ = s.ActiveContributions(); len(all) != 0 {
 			t.Fatalf("revoked station still contributes: %+v", all)
 		}
-		b, _ := s.Join("fp-b", "pk-b", &code, true, 0.25, nil, t0)
+		b, _ := s.Join("fp-b", "pk-b", &code, true, 0.25, nil, 0, t0)
 		_, _ = s.PutContribution(b.ID, "profile-dddddddddddd", c, 2, t0)
-		if err := s.Leave(b); err != nil {
+		if err := s.Leave(b, t0); err != nil {
 			t.Fatal(err)
 		}
 		var n int
@@ -210,7 +210,14 @@ func TestNonces(t *testing.T) {
 		if ok, _ := s.UseNonce("other", "n1", t0); !ok {
 			t.Fatal("nonces are per key")
 		}
-		if err := s.Prune(t0.Add(time.Second), 14); err != nil {
+		// Nonces stay a day beyond their expiry, so that a clock that went back cannot revive a forgotten one
+		if err := s.Prune(t0.Add(time.Hour), 14); err != nil {
+			t.Fatal(err)
+		}
+		if ok, _ := s.UseNonce("fp", "n1", t0.Add(time.Minute)); ok {
+			t.Fatal("a nonce expired an hour ago is still remembered")
+		}
+		if err := s.Prune(t0.Add(25*time.Hour), 14); err != nil {
 			t.Fatal(err)
 		}
 		if ok, _ := s.UseNonce("fp", "n1", t0.Add(time.Minute)); !ok {
@@ -226,16 +233,16 @@ func TestModelsAndReports(t *testing.T) {
 			b, _ := json.Marshal(map[string]int64{"version": v})
 			return b, "jws", nil
 		}
-		v1, err := s.AddModel(g, "h1", build, t0)
+		v1, err := s.AddModel(g, "h1", "", build, t0)
 		if err != nil || v1 != 1 {
 			t.Fatalf("first model: %d %v", v1, err)
 		}
-		v2, _ := s.AddModel(g, "h2", build, t0)
+		v2, _ := s.AddModel(g, "h2", "", build, t0)
 		m1, _ := s.Model(v1)
 		if m1.Status != Withdrawn || m1.Reason != "superseded" || m1.Payload != `{"version":1}` {
 			t.Fatalf("older candidate must be superseded: %+v", m1)
 		}
-		if h, _ := s.LatestInputsHash(g); h != "h2" {
+		if h, _ := s.LatestResultHash(g); h != "h2" {
 			t.Fatalf("inputs hash: %q", h)
 		}
 		if ok, _ := s.SetModelStatus(v2, Published, "", t0); !ok {
@@ -251,7 +258,7 @@ func TestModelsAndReports(t *testing.T) {
 		}
 		code := "c"
 		_, _ = s.AddInvitation(code, 10, nil, false, t0)
-		a, _ := s.Join("fp-a", "pk-a", &code, true, 0.25, nil, t0)
+		a, _ := s.Join("fp-a", "pk-a", &code, true, 0.25, nil, 0, t0)
 		r := Report{StationID: a.ID, ProfileID: "p1", ModelVersion: v2, Adopted: true, Verdict: Worse,
 			Kinds:      map[string]spec.KindCheck{"click": {LocalErr: 0.1, GlobalErr: 0.2, MasterRecordings: 2}},
 			ReceivedAt: t0}
@@ -286,10 +293,10 @@ func TestBackupAndStationProfiles(t *testing.T) {
 	eachDB(t, func(t *testing.T, s *Store) {
 		code := "c"
 		_, _ = s.AddInvitation(code, 10, nil, false, t0)
-		a, _ := s.Join("fp-a", "pk-a", &code, true, 0.25, nil, t0)
+		a, _ := s.Join("fp-a", "pk-a", &code, true, 0.25, nil, 0, t0)
 		_, _ = s.PutContribution(a.ID, "profile-aaaaaaaaaaaa", contribution(t), 2, t0)
 		g := Group{FeatureVersion: 1, DetectorVersion: "1", ChainClass: spec.ClassAll}
-		v, _ := s.AddModel(g, "h", func(int64) ([]byte, string, error) { return []byte("{}"), "jws", nil }, t0)
+		v, _ := s.AddModel(g, "h", "", func(int64) ([]byte, string, error) { return []byte("{}"), "jws", nil }, t0)
 		_ = s.PutReport(Report{StationID: a.ID, ProfileID: "report-only-profile1", ModelVersion: v,
 			Kinds: map[string]spec.KindCheck{}, Verdict: NotWorse, ReceivedAt: t0})
 		known, err := s.StationProfiles(a.ID)
@@ -371,11 +378,11 @@ func TestBoundInvitationsAndAccounts(t *testing.T) {
 	eachDB(t, func(t *testing.T, s *Store) {
 		_, _ = s.AddInvitation("bound-code", 1, nil, true, t0)
 		code := "bound-code"
-		if _, err := s.Join("fp-a", "pk", &code, false, 0.25, nil, t0); !errors.Is(err, ErrBindingRequired) {
+		if _, err := s.Join("fp-a", "pk", &code, false, 0.25, nil, 0, t0); !errors.Is(err, ErrBindingRequired) {
 			t.Fatalf("bound code without a check: %v", err)
 		}
 		refuse := func(int64, bool) (string, error) { return "", errors.New("refused") }
-		if _, err := s.Join("fp-a", "pk", &code, false, 0.25, refuse, t0); err == nil {
+		if _, err := s.Join("fp-a", "pk", &code, false, 0.25, refuse, 0, t0); err == nil {
 			t.Fatal("a refusing check must stop the join")
 		}
 		if invs, _ := s.Invitations(); invs[0].Uses != 0 || !invs[0].Bound {
@@ -383,14 +390,14 @@ func TestBoundInvitationsAndAccounts(t *testing.T) {
 		}
 		var seen bool
 		accept := func(id int64, bound bool) (string, error) { seen = bound; return "account-0123456789ab", nil }
-		st, err := s.Join("fp-a", "pk", &code, false, 0.25, accept, t0)
+		st, err := s.Join("fp-a", "pk", &code, false, 0.25, accept, 0, t0)
 		if err != nil || !seen || st.Account != "account-0123456789ab" || st.Status != Active {
 			t.Fatalf("bound join: %+v %v", st, err)
 		}
 		_, _ = s.AddInvitation("second", 5, nil, false, t0)
 		other := "second"
-		_, _ = s.Join("fp-b", "pk", &other, false, 0.25, accept, t0)
-		_, _ = s.Join("fp-c", "pk", &other, false, 0.25, nil, t0)
+		_, _ = s.Join("fp-b", "pk", &other, false, 0.25, accept, 0, t0)
+		_, _ = s.Join("fp-c", "pk", &other, false, 0.25, nil, 0, t0)
 		fps, err := s.RevokeAccount("account-0123456789ab", t0)
 		if err != nil || len(fps) != 2 {
 			t.Fatalf("revoke account: %v %v", fps, err)
@@ -405,7 +412,7 @@ func TestStationCounters(t *testing.T) {
 	eachDB(t, func(t *testing.T, s *Store) {
 		code := "c"
 		_, _ = s.AddInvitation(code, 10, nil, false, t0)
-		a, _ := s.Join("fp-a", "pk", &code, false, 0.25, nil, t0)
+		a, _ := s.Join("fp-a", "pk", &code, false, 0.25, nil, 0, t0)
 		c := contribution(t)
 		_, _ = s.PutContribution(a.ID, "profile-aaaaaaaaaaaa", c, 16, t0)
 		_, _ = s.PutContribution(a.ID, "profile-aaaaaaaaaaaa", c, 16, t0.Add(time.Minute)) // unchanged
@@ -464,5 +471,91 @@ func TestDatabaseSchemaReadsWithoutChanging(t *testing.T) {
 	s.Close()
 	if v, err := DatabaseSchema("sqlite://" + path); err != nil || v != SchemaVersion {
 		t.Fatalf("schema %d %v", v, err)
+	}
+}
+
+// The second review's A2-5: a key that leaves and comes back keeps trust and age, but may do so only a few times
+// a day.
+func TestReturnsAreLimited(t *testing.T) {
+	eachDB(t, func(t *testing.T, s *Store) {
+		code := "c"
+		_, _ = s.AddInvitation(code, 100, nil, false, t0)
+		// The first join is no return; MaxReturnsPerDay returns are fine, the next one is refused
+		for i := 0; i <= MaxReturnsPerDay+1; i++ {
+			at := t0.Add(time.Duration(i) * time.Minute)
+			st, err := s.Join("fp-x", "pk-x", &code, true, 0.25, nil, 0, at)
+			if i == MaxReturnsPerDay+1 {
+				if !errors.Is(err, ErrJoinLimit) {
+					t.Fatalf("return %d: %v", i, err)
+				}
+				break
+			}
+			if err != nil {
+				t.Fatalf("return %d: %v", i, err)
+			}
+			if err := s.Leave(st, at.Add(30*time.Second)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := s.Join("fp-x", "pk-x", &code, true, 0.25, nil, 0, t0.Add(25*time.Hour)); err != nil {
+			t.Fatalf("the next day: %v", err)
+		}
+	})
+}
+
+// The second review's A2-1: the migration to schema 4 makes an anchor only of a station whose full trust never
+// grew automatically, that is, one the operator set.
+func TestMigrationPromotesOnlyOperatorTrust(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "vm.sqlite")
+	if _, err := OpenAsIs("sqlite://" + path); err == nil {
+		t.Fatal("opened as is, a missing database is created rather than refused")
+	}
+	if err := os.WriteFile(path, nil, 0o600); err != nil { // an empty file is an empty SQLite database
+		t.Fatal(err)
+	}
+	s, err := OpenAsIs("sqlite://" + path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Build a schema-3 database by hand: the first schema and the migrations up to 3
+	dialect := strings.NewReplacer("{ID}", "INTEGER PRIMARY KEY", "{FLOAT}", "REAL")
+	for _, stmt := range strings.Split(dialect.Replace(schema), ";") {
+		if strings.TrimSpace(stmt) != "" {
+			if _, err := s.db.Exec(stmt); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	for _, m := range migrations[:2] {
+		for _, stmt := range m {
+			if _, err := s.db.Exec(dialect.Replace(stmt)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if _, err := s.db.Exec("INSERT INTO meta (key, value) VALUES ('schema_version', '3')"); err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range []struct {
+		fp     string
+		trust  float64
+		gained any
+	}{{"fp-set", 1, nil}, {"fp-grown", 1, ms(t0)}, {"fp-new", 0.25, nil}} {
+		if _, err := s.db.Exec(`INSERT INTO stations (key_fp, public_key, status, trust, trust_gained_at, joined_at)
+			VALUES (?, ?, 'active', ?, ?, ?)`, row.fp, "pk", row.trust, row.gained, ms(t0)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s.Close()
+	s, err = Open("sqlite://" + path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for fp, want := range map[string]bool{"fp-set": true, "fp-grown": false, "fp-new": false} {
+		st, _ := s.Station(fp)
+		if st == nil || st.TrustOperator != want {
+			t.Errorf("%s: operator %v, want %v", fp, st != nil && st.TrustOperator, want)
+		}
 	}
 }

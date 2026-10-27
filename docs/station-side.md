@@ -1,8 +1,9 @@
 # What a station needs
 
 Vinyl-Mind is the hub; vinyl-check is the station. This page lists what vinyl-check has to implement to take part,
-in the order it is needed. It is written against vinyl-check 1.0.1 and its `learning.py`. The exchange itself is
-defined in `spec/` and `docs/api.md`; `internal/client` is a minimal client in Go that does all of it.
+in the order it is needed. vinyl-check 1.1.0 implements all of it (`vinylcheck/vinylmind.py`); the page stays as
+the reference for what a station does and why. The exchange itself is defined in `spec/` and `docs/api.md`;
+`internal/client` is a minimal client in Go that does all of it.
 
 ## Before anything is sent
 
@@ -133,7 +134,12 @@ bytes anyway.
    - a prior strength of about **100** (instead of `L2 = 1`) worked best for profiles with few judgements. The
      station's own check on its master recordings decides in the end, so the strength can also be chosen by it.
 5. When `GET /v1/models/{version}` reports the model in use as `withdrawn`, drop it and fall back to the local
-   model or the newest published one.
+   model or the published one, if the hub names one: a withdrawal does not bring an older model back.
+6. Never adopt a candidate, only a published model, and never a model with a smaller version than the one adopted
+   last for the group unless the hub says so in a `state_jws` it signed: every entry carries this signed statement
+   of its status (`docs/api.md`), and a station that keeps it with the model can tell a status it was given from
+   one that was changed on the way. Its `seq` grows with every status change of the model: accept a statement about
+   a model only if its `seq` is greater than the last one seen for that model, whatever the clocks say.
 
 ## Privacy on the station
 

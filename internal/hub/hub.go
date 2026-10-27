@@ -7,10 +7,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"math"
 	"slices"
 	"sort"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/michaelpietzsch/vinyl-mind/internal/config"
@@ -26,14 +28,27 @@ type Hub struct {
 	key   ed25519.PrivateKey
 	fp    string
 	log   *slog.Logger
+
+	mu      sync.Mutex
+	seen    map[int64]bool       // stations used in the last combination: the ones whose reports may earn trust
+	state   map[string]string    // the last state per group, to report a change once
+	stateAt map[string]time.Time // when a group was last reported in a state: each state at most once a day
 }
+
+// stateReportEvery is how often a group is reported in the same state at most: a state that flaps at a threshold
+// (an anchor at the band's edge, two anchors a hair apart) is one event and one warning a day per state, not one
+// per run, and a state that is not a model is repeated once a day as long as it lasts, so that a coefficient
+// kept through a permanent dispute is not reported once and forgotten; the current state is always in meta
+// last_combine and in vinyl-mind status.
+const stateReportEvery = 24 * time.Hour
 
 // New returns a hub.
 func New(cfg config.Config, st *store.Store, key ed25519.PrivateKey, log *slog.Logger) *Hub {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Hub{cfg: cfg, store: st, key: key, fp: keys.Fingerprint(key.Public().(ed25519.PublicKey)), log: log}
+	return &Hub{cfg: cfg, store: st, key: key, fp: keys.Fingerprint(key.Public().(ed25519.PublicKey)), log: log,
+		seen: map[int64]bool{}, state: map[string]string{}, stateAt: map[string]time.Time{}}
 }
 
 // Outcome is what one combine run did for one group.
@@ -44,9 +59,186 @@ type Outcome struct {
 	Kinds   map[string]*Result
 }
 
-// Combine builds a new candidate for every group whose contributions changed since its last model. With dryRun,
-// nothing is stored and no trust changes.
+// pass is one combination of everything: the results per group and what they say about the stations.
+type pass struct {
+	groups []groupResult
+	seen   map[int64]bool    // stations used in a combination over all classes
+	far    map[int64]farness // stations with a contribution far from the reference
+}
+
+type farness struct {
+	outside int     // learned coefficients outside the band, most over the station's profiles
+	maxDist float64 // largest distance to the reference, in bands
+	demoted bool    // an anchor that was no anchor in the combination, being far from the other anchors
+}
+
+type groupResult struct {
+	v     *spec.Version
+	g     store.Group
+	kinds map[string]*Result
+}
+
+// GroupState is what the last combination found for one group, for the operator's overview (meta last_combine).
+type GroupState struct {
+	Group    store.Group `json:"group"`
+	State    string      `json:"state"` // "model", "no_anchor", "anchors_disagree", "too_few" or "no_voter"
+	Detail   string      `json:"detail,omitempty"`
+	Version  int64       `json:"version,omitempty"` // the candidate built, if one was
+	Used     int         `json:"used"`              // profiles in the combination
+	Anchors  int         `json:"anchors"`
+	Far      int         `json:"far"`      // stations far from the reference
+	Disagree int         `json:"disagree"` // coefficients two anchors dispute: kept at the published model or the prior
+	Voters   int         `json:"voters"`   // anchors that could vote on the candidate: not contributing, other account
+	Combined int64       `json:"combined_at"`
+}
+
+// Combine builds a new candidate for every group whose combination changed since its last model, settles the
+// stations' trust by what the combination found and records the state of every group, so that a group that
+// cannot form a model, or a candidate nobody can publish, is reported rather than silently waited on. With
+// dryRun, nothing is stored and no trust changes.
 func (h *Hub) Combine(now time.Time, dryRun bool) ([]Outcome, error) {
+	p, err := h.combineAll()
+	if err != nil {
+		return nil, err
+	}
+	anchors, err := h.anchors()
+	if err != nil {
+		return nil, err
+	}
+	var out []Outcome
+	var states []GroupState
+	for _, gr := range p.groups {
+		o := Outcome{Group: gr.g, Kinds: gr.kinds}
+		o.Version, o.Skipped, err = h.candidate(gr, now, dryRun)
+		if err != nil {
+			return out, err
+		}
+		out = append(out, o)
+		states = append(states, h.groupState(gr, o, anchors, now))
+	}
+	if dryRun {
+		return out, nil
+	}
+	if err := h.adjustTrust(p, now); err != nil {
+		return out, err
+	}
+	h.mu.Lock()
+	h.seen = p.seen
+	for _, st := range states {
+		key := fmt.Sprintf("%d/%s/%s", st.Group.FeatureVersion, st.Group.DetectorVersion, st.Group.ChainClass)
+		changed := h.state[key] != st.State
+		h.state[key] = st.State
+		if !changed && st.State == "model" {
+			continue
+		}
+		if at, ok := h.stateAt[key+"/"+st.State]; ok && now.Sub(at) < stateReportEvery {
+			continue
+		}
+		h.stateAt[key+"/"+st.State] = now
+		switch st.State {
+		case "model":
+			h.log.Info("group forms a model again", "group", key)
+		case "anchors_disagree":
+			h.log.Warn("anchors disagree", "group", key, "detail", st.Detail)
+		default:
+			h.log.Warn("group cannot be served", "group", key, "state", st.State, "detail", st.Detail)
+		}
+		h.event(now, "server", "group_"+st.State, key, st.Detail)
+	}
+	h.mu.Unlock()
+	summary, _ := json.Marshal(states)
+	if err := h.store.SetMeta("last_combine", string(summary)); err != nil {
+		return out, err
+	}
+	return out, h.store.SetMeta("last_combine_at", strconv.FormatInt(now.Unix(), 10))
+}
+
+// anchorInfo is what Combine needs to know about the operator's stations.
+type anchorInfo struct {
+	id      int64
+	account string
+}
+
+func (h *Hub) anchors() ([]anchorInfo, error) {
+	stations, err := h.store.Stations()
+	if err != nil {
+		return nil, err
+	}
+	var out []anchorInfo
+	for _, st := range stations {
+		if st.Status == store.Active && h.anchor(st.Trust, st.TrustOperator) {
+			out = append(out, anchorInfo{st.ID, st.Account})
+		}
+	}
+	return out, nil
+}
+
+// groupState judges one group's result: whether it formed a model, why not, whether two anchors disagree on
+// coefficients that were kept, and whether any anchor could vote on its candidate, that is, one that did not
+// contribute to it and shares no account with one that did.
+func (h *Hub) groupState(gr groupResult, o Outcome, anchors []anchorInfo, now time.Time) GroupState {
+	gs := GroupState{Group: gr.g, Version: o.Version, Combined: now.Unix()}
+	contributors, accounts := map[int64]bool{}, map[string]bool{}
+	farStations := map[int64]bool{}
+	model, kept := false, 0
+	for _, kind := range gr.v.Kinds {
+		r := gr.kinds[kind]
+		if r == nil {
+			continue
+		}
+		gs.Used += len(r.Used)
+		gs.Anchors = max(gs.Anchors, r.Anchors)
+		gs.Disagree += r.Disagree
+		for _, u := range r.Used {
+			contributors[u.StationID] = true
+			if u.Account != "" {
+				accounts[u.Account] = true
+			}
+			if u.Far {
+				farStations[u.StationID] = true
+			}
+		}
+		if r.Coef != nil {
+			model = true
+			kept += len(r.Kept)
+			continue
+		}
+		if gs.Detail == "" {
+			gs.Detail = r.Reason
+			switch {
+			case r.Anchors == 0 && r.Stations > 0:
+				gs.State = "no_anchor"
+			case r.Disagree > 0:
+				gs.State = "anchors_disagree"
+			default:
+				gs.State = "too_few"
+			}
+		}
+	}
+	gs.Far = len(farStations)
+	for _, a := range anchors {
+		if !contributors[a.id] && (a.account == "" || !accounts[a.account]) {
+			gs.Voters++
+		}
+	}
+	if model {
+		gs.State, gs.Detail = "model", ""
+		switch {
+		case kept > 0:
+			gs.State = "anchors_disagree"
+			gs.Detail = fmt.Sprintf("the anchors have no majority on %d coefficients (two learners apart, or a "+
+				"split), kept at the published model or the prior until they agree (see which with vinyl-mind "+
+				"combine -dry-run)", kept)
+		case gs.Voters == 0:
+			gs.State = "no_voter"
+			gs.Detail = "every anchor contributed to this group's model, or shares an account with one that did: " +
+				"nobody can publish it (mark a station that does not contribute as an anchor)"
+		}
+	}
+	return gs
+}
+
+func (h *Hub) combineAll() (*pass, error) {
 	cs, err := h.store.ActiveContributions()
 	if err != nil {
 		return nil, err
@@ -72,10 +264,7 @@ func (h *Hub) Combine(now time.Time, dryRun bool) ([]Outcome, error) {
 		}
 		return keysSorted[i].det < keysSorted[j].det
 	})
-
-	var out []Outcome
-	farByStation := map[int64]bool{}
-	seen := map[int64]bool{}
+	p := &pass{seen: map[int64]bool{}, far: map[int64]farness{}}
 	for _, b := range keysSorted {
 		v, err := spec.Get(b.fv)
 		if err != nil {
@@ -98,62 +287,98 @@ func (h *Hub) Combine(now time.Time, dryRun bool) ([]Outcome, error) {
 			if cls != spec.ClassAll {
 				scope = perClass[cls]
 			}
-			g := store.Group{FeatureVersion: b.fv, DetectorVersion: b.det, ChainClass: cls}
-			o := Outcome{Group: g, Kinds: map[string]*Result{}}
+			gr := groupResult{v: v, g: store.Group{FeatureVersion: b.fv, DetectorVersion: b.det, ChainClass: cls},
+				kinds: map[string]*Result{}}
+			published, err := h.publishedCoefs(gr.g)
+			if err != nil {
+				return nil, err
+			}
 			for _, kind := range v.Kinds {
 				var in []Input
 				for _, c := range scope {
 					if k, ok := c.Kinds[kind]; ok {
-						in = append(in, Input{StationID: c.StationID, ProfileID: c.ProfileID, Trust: c.Trust, Kind: k})
+						in = append(in, Input{StationID: c.StationID, ProfileID: c.ProfileID, Account: c.Account,
+							Trust: c.Trust, Anchor: h.anchor(c.Trust, c.TrustOperator), Kind: k})
 					}
 				}
 				if len(in) == 0 {
 					continue
 				}
-				r := Combine(in, h.cfg.Aggregation, v.NCoef())
-				o.Kinds[kind] = r
+				r := CombineWith(in, h.cfg.Aggregation, v.NCoef(), published[kind])
+				gr.kinds[kind] = r
 				// Trust is judged on the model over all classes only, so that a profile is not counted twice
 				if r.Coef != nil && cls == spec.ClassAll {
 					for _, u := range r.Used {
-						seen[u.StationID] = true
-						if far(u.Kind, r.Coef, r.Spread, h.cfg.Aggregation.ConsistencyK) {
-							farByStation[u.StationID] = true
+						p.seen[u.StationID] = true
+						if u.Far || u.Demoted {
+							f := p.far[u.StationID]
+							p.far[u.StationID] = farness{max(f.outside, u.Outside), math.Max(f.maxDist, u.MaxDist),
+								f.demoted || u.Demoted}
 						}
 					}
 				}
 			}
-			o.Version, o.Skipped, err = h.candidate(v, g, scope, o.Kinds, now, dryRun)
-			if err != nil {
-				return out, err
-			}
-			out = append(out, o)
+			p.groups = append(p.groups, gr)
 		}
 	}
-	if !dryRun {
-		if err := h.adjustTrust(seen, farByStation, now); err != nil {
-			return out, err
-		}
+	return p, nil
+}
+
+// anchor says whether a station is one of the operator's: trust given by the operator, at the full level.
+func (h *Hub) anchor(trust float64, operator bool) bool {
+	return operator && trust >= h.cfg.Aggregation.NewcomerTrust
+}
+
+// publishedCoefs returns the coefficients per kind of the group's published model, where a coefficient that two
+// anchors disagree on is kept; empty without one.
+func (h *Hub) publishedCoefs(g store.Group) (map[string][]float64, error) {
+	m, err := h.store.Published(g)
+	if err != nil || m == nil {
+		return nil, err
+	}
+	var gm spec.GlobalModel
+	if err := json.Unmarshal([]byte(m.Payload), &gm); err != nil {
+		return nil, fmt.Errorf("published model %d: %w", m.Version, err)
+	}
+	out := make(map[string][]float64, len(gm.Kinds))
+	for kind, k := range gm.Kinds {
+		out[kind] = k.Coef
 	}
 	return out, nil
 }
 
-// inputsHash identifies the contributions behind a model together with the settings that combine them: if both
-// are the same as for the last model, a new one would be the same model again.
-func (h *Hub) inputsHash(scope []store.Contribution) string {
-	ids := make([]string, len(scope))
-	for i, c := range scope {
-		ids[i] = strconv.FormatInt(c.ID, 10)
+// resultHash identifies a combination by what it produces: the rounded coefficients, spreads and counts per kind,
+// with the settings that produced them. Two combinations with the same hash would be the same model, so the second
+// is not stored; a changed contribution that changes nothing (left out, or pulled to the same place) does not
+// churn out candidates either.
+func (h *Hub) resultHash(kinds map[string]*Result) string {
+	type summary struct {
+		Coef, Spread []float64
+		Basis        []int
+		Profiles     int
+		Stations     int
+		Examples     float64
 	}
-	sort.Strings(ids)
+	sums := map[string]summary{}
+	for kind, r := range kinds {
+		if r.Coef != nil {
+			sums[kind] = summary{round(r.Coef), round(r.Spread), r.Basis, r.Profiles, r.Stations, math.Round(r.Examples)}
+		}
+	}
+	body, _ := json.Marshal(sums)
 	settings, _ := json.Marshal(h.cfg.Aggregation)
-	sum := sha256.Sum256(fmt.Appendf(nil, "%s|%v", settings, ids))
+	sum := sha256.Sum256(fmt.Appendf(nil, "%s|%s", settings, body))
 	return hex.EncodeToString(sum[:])
 }
 
-func (h *Hub) candidate(v *spec.Version, g store.Group, scope []store.Contribution, kinds map[string]*Result,
-	now time.Time, dryRun bool) (int64, string, error) {
+// candidateTolerance is how far a new combination may differ from the candidate under review and still count as
+// the same one: the reports already given keep their meaning, and nobody pushes a candidate out by nudging a
+// contribution every hour.
+const candidateTolerance = 0.02
+
+func (h *Hub) candidate(gr groupResult, now time.Time, dryRun bool) (int64, string, error) {
 	model := map[string]spec.KindModel{}
-	for kind, r := range kinds {
+	for kind, r := range gr.kinds {
 		if r.Coef == nil {
 			continue
 		}
@@ -161,15 +386,50 @@ func (h *Hub) candidate(v *spec.Version, g store.Group, scope []store.Contributi
 			Stations: r.Stations, Examples: math.Round(r.Examples*100) / 100}
 	}
 	if len(model) == 0 {
-		return 0, "not enough usable contributions", nil
+		reason := "not enough usable contributions"
+		for _, kind := range gr.v.Kinds {
+			if r := gr.kinds[kind]; r != nil && r.Reason != "" {
+				reason = r.Reason
+				break
+			}
+		}
+		return 0, reason, nil
 	}
-	hash := h.inputsHash(scope)
-	last, err := h.store.LatestInputsHash(g)
+	hash := h.resultHash(gr.kinds)
+	last, err := h.store.LatestResultHash(gr.g)
 	if err != nil {
 		return 0, "", err
 	}
 	if last == hash {
 		return 0, "unchanged since the last model", nil
+	}
+	current, err := h.store.Latest(gr.g, store.Candidate)
+	if err != nil {
+		return 0, "", err
+	}
+	if current != nil {
+		if age := now.Sub(current.CreatedAt); age < h.reviewWindow() {
+			return 0, fmt.Sprintf("candidate %d under review for another %s", current.Version,
+				(h.reviewWindow() - age).Round(time.Minute)), nil
+		}
+		close, err := within(current.Payload, model, candidateTolerance)
+		if err != nil {
+			return 0, "", err
+		}
+		if close {
+			return 0, fmt.Sprintf("differs from candidate %d only within tolerance", current.Version), nil
+		}
+	} else if published, err := h.store.Published(gr.g); err != nil {
+		return 0, "", err
+	} else if published != nil {
+		// Nothing to review, and nothing new to say: the published model is as good as this would be
+		close, err := within(published.Payload, model, candidateTolerance)
+		if err != nil {
+			return 0, "", err
+		}
+		if close {
+			return 0, fmt.Sprintf("differs from published model %d only within tolerance", published.Version), nil
+		}
 	}
 	if dryRun {
 		return 0, "dry run", nil
@@ -177,9 +437,9 @@ func (h *Hub) candidate(v *spec.Version, g store.Group, scope []store.Contributi
 	a := h.cfg.Aggregation
 	build := func(version int64) ([]byte, string, error) {
 		gm := spec.GlobalModel{
-			Spec: "vinyl-mind/global-model", Version: version, FeatureVersion: g.FeatureVersion,
-			DetectorVersion: g.DetectorVersion, ChainClass: g.ChainClass, CreatedAt: now.Unix(), Server: h.fp,
-			Features: v.Names(), Scaling: spec.Scaling{Center: v.Center(), Scale: v.Scale()},
+			Spec: "vinyl-mind/global-model", Version: version, FeatureVersion: gr.g.FeatureVersion,
+			DetectorVersion: gr.g.DetectorVersion, ChainClass: gr.g.ChainClass, CreatedAt: now.Unix(), Server: h.fp,
+			Features: gr.v.Names(), Scaling: spec.Scaling{Center: gr.v.Center(), Scale: gr.v.Scale()},
 			Aggregation: spec.AggregationInfo{Method: a.Method, Trim: a.Trim, ManualWeight: a.ManualWeight,
 				MaxEstError: a.MaxEstError, MaxStationShare: a.MaxStationShare},
 			Kinds: model,
@@ -194,13 +454,54 @@ func (h *Hub) candidate(v *spec.Version, g store.Group, scope []store.Contributi
 		}
 		return payload, keys.JWSSign(h.key, payload), nil
 	}
-	version, err := h.store.AddModel(g, hash, build, now)
+	version, err := h.store.AddModel(gr.g, hash, contributorsOf(gr.kinds), build, now)
 	if err != nil {
 		return 0, "", err
 	}
-	h.log.Info("new candidate", "version", version, "feature_version", g.FeatureVersion,
-		"detector_version", g.DetectorVersion, "chain_class", g.ChainClass)
+	h.log.Info("new candidate", "version", version, "feature_version", gr.g.FeatureVersion,
+		"detector_version", gr.g.DetectorVersion, "chain_class", gr.g.ChainClass)
+	h.event(now, "server", "candidate", fmt.Sprint(version), fmt.Sprintf("feature %d, detector %s, class %s",
+		gr.g.FeatureVersion, gr.g.DetectorVersion, gr.g.ChainClass))
 	return version, "", nil
+}
+
+// within reports whether a stored model's coefficients differ from the new ones by at most tol everywhere.
+func within(payload string, model map[string]spec.KindModel, tol float64) (bool, error) {
+	var old spec.GlobalModel
+	if err := json.Unmarshal([]byte(payload), &old); err != nil {
+		return false, err
+	}
+	if len(old.Kinds) != len(model) {
+		return false, nil
+	}
+	for kind, m := range model {
+		o, ok := old.Kinds[kind]
+		if !ok || len(o.Coef) != len(m.Coef) {
+			return false, nil
+		}
+		for j := range m.Coef {
+			if math.Abs(o.Coef[j]-m.Coef[j]) > tol {
+				return false, nil
+			}
+		}
+	}
+	return true, nil
+}
+
+// contributorsOf records the stations and accounts behind a model, so that they cannot vote for it.
+func contributorsOf(kinds map[string]*Result) string {
+	stations, accounts := map[int64]bool{}, map[string]bool{}
+	for _, r := range kinds {
+		for _, u := range r.Used {
+			stations[u.StationID] = true
+			if u.Account != "" {
+				accounts[u.Account] = true
+			}
+		}
+	}
+	c := Contributors{Stations: slices.Sorted(maps.Keys(stations)), Accounts: slices.Sorted(maps.Keys(accounts))}
+	b, _ := json.Marshal(c)
+	return string(b)
 }
 
 func round(xs []float64) []float64 {
@@ -211,10 +512,14 @@ func round(xs []float64) []float64 {
 	return out
 }
 
-// adjustTrust lowers the trust of stations with a contribution far from the consensus at once, and raises the
-// trust of consistent stations at most once per day, so that trust cannot be farmed by sending often.
-func (h *Hub) adjustTrust(seen, farAway map[int64]bool, now time.Time) error {
-	if len(seen) == 0 {
+// adjustTrust applies what a pass found. Every station used records whether it was far (far_at), which for an
+// anchor is the doubt about its word. Trust the operator gave never changes here: an anchor far from the other
+// anchors is reported, not demoted, so that no group of stations can push the reference aside. Automatic trust
+// falls by TrustPenalty for a contribution far from the reference, at most once a day and only for a contribution
+// that changed since the last penalty, and rises by TrustStep for a consistent one, at most once a day and never
+// beyond TrustAutoMax: the full level stays the operator's to give.
+func (h *Hub) adjustTrust(p *pass, now time.Time) error {
+	if len(p.seen) == 0 {
 		return nil
 	}
 	stations, err := h.store.Stations()
@@ -223,31 +528,76 @@ func (h *Hub) adjustTrust(seen, farAway map[int64]bool, now time.Time) error {
 	}
 	a := h.cfg.Aggregation
 	for _, st := range stations {
-		if !seen[st.ID] {
+		if !p.seen[st.ID] {
 			continue
 		}
-		if farAway[st.ID] {
-			t := roundTrust(math.Max(a.TrustMin, st.Trust-a.TrustPenalty))
-			if t != st.Trust {
-				h.log.Info("trust lowered", "station", st.KeyFP, "trust", t)
-				if err := h.store.SetTrust(st.ID, t, nil); err != nil {
+		if _, far := p.far[st.ID]; far {
+			if err := h.store.SetFar(st.ID, &now); err != nil {
+				return err
+			}
+		} else if st.FarAt != nil {
+			if err := h.store.SetFar(st.ID, nil); err != nil {
+				return err
+			}
+		}
+		if st.TrustOperator {
+			// Reported once a day (the penalty stamp serves as the clock, and keeps the anchor from deciding about
+			// models for that day), the trust unchanged: lowering it is the operator's call
+			if f, far := p.far[st.ID]; far && (st.TrustPenalty == nil || now.Sub(*st.TrustPenalty) >= 24*time.Hour) {
+				action, what := "anchor_far", "far from the other operator-trusted stations"
+				if f.demoted {
+					action, what = "anchor_demoted", "no anchor in this combination: far from the other operator-trusted stations"
+				}
+				detail := fmt.Sprintf("%s on %d coefficients, up to %.1f bands; trust unchanged, no vote for a day",
+					what, f.outside, f.maxDist)
+				h.log.Warn("anchor far from the other anchors", "station", st.KeyFP, "demoted", f.demoted,
+					"outside", f.outside, "max_bands", f.maxDist)
+				h.event(now, "review", action, st.KeyFP, detail)
+				if err := h.store.PenalizeTrust(st.ID, st.Trust, now); err != nil {
 					return err
 				}
 			}
 			continue
 		}
-		if err := h.gainTrust(&st, now); err != nil {
+		if _, far := p.far[st.ID]; far {
+			if st.TrustPenalty != nil && (now.Sub(*st.TrustPenalty) < 24*time.Hour || st.LastContrib == nil ||
+				!st.LastContrib.After(*st.TrustPenalty)) {
+				continue
+			}
+			t := roundTrust(math.Max(a.TrustMin, st.Trust-a.TrustPenalty))
+			if t != st.Trust {
+				if err := h.store.PenalizeTrust(st.ID, t, now); err != nil {
+					return err
+				}
+				f := p.far[st.ID]
+				h.log.Info("trust lowered", "station", st.KeyFP, "trust", t)
+				h.event(now, "review", "trust_lowered", st.KeyFP,
+					fmt.Sprintf("%.3f to %.3f: far from the reference on %d coefficients, up to %.1f bands", st.Trust,
+						t, f.outside, f.maxDist))
+			}
+			continue
+		}
+		if err := h.gainTrust(&st, now, "consistent contribution"); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (h *Hub) gainTrust(st *store.Station, now time.Time) error {
-	if st.Trust >= 1 || (st.TrustGainedAt != nil && now.Sub(*st.TrustGainedAt) < 24*time.Hour) {
+// gainTrust raises automatic trust by one step, at most once a day and up to TrustAutoMax.
+func (h *Hub) gainTrust(st *store.Station, now time.Time, why string) error {
+	a := h.cfg.Aggregation
+	if st.TrustOperator || st.Trust >= a.TrustAutoMax ||
+		(st.TrustGainedAt != nil && now.Sub(*st.TrustGainedAt) < 24*time.Hour) {
 		return nil
 	}
-	return h.store.SetTrust(st.ID, roundTrust(math.Min(1, st.Trust+h.cfg.Aggregation.TrustStep)), &now)
+	t := roundTrust(math.Min(a.TrustAutoMax, st.Trust+a.TrustStep))
+	if err := h.store.SetTrust(st.ID, t, now); err != nil {
+		return err
+	}
+	h.log.Info("trust raised", "station", st.KeyFP, "trust", t, "why", why)
+	h.event(now, "review", "trust_raised", st.KeyFP, fmt.Sprintf("%.3f to %.3f: %s", st.Trust, t, why))
+	return nil
 }
 
 func roundTrust(t float64) float64 { return math.Round(t*1000) / 1000 }
